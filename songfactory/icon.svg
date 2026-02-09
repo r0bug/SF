@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2b2b2b"/>
+      <stop offset="100%" style="stop-color:#1a1a1a"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect x="8" y="8" width="240" height="240" rx="40" ry="40" fill="url(#bg)" stroke="#E8A838" stroke-width="4"/>
+  <!-- Music note -->
+  <g transform="translate(128,128)">
+    <!-- Note stem -->
+    <rect x="18" y="-70" width="6" height="100" rx="3" fill="#E8A838"/>
+    <!-- Note flag -->
+    <path d="M24,-70 Q50,-65 45,-40 Q40,-20 24,-25" fill="none" stroke="#E8A838" stroke-width="5" stroke-linecap="round"/>
+    <!-- Note head -->
+    <ellipse cx="8" cy="30" rx="22" ry="16" transform="rotate(-20,8,30)" fill="#E8A838"/>
+    <!-- Factory gear (small) -->
+    <g transform="translate(-45,-40) scale(0.6)">
+      <circle cx="0" cy="0" r="18" fill="none" stroke="#888" stroke-width="6"/>
+      <circle cx="0" cy="0" r="8" fill="#888"/>
+      <!-- Gear teeth -->
+      <rect x="-4" y="-26" width="8" height="12" rx="2" fill="#888"/>
+      <rect x="-4" y="14" width="8" height="12" rx="2" fill="#888"/>
+      <rect x="-26" y="-4" width="12" height="8" rx="2" fill="#888"/>
+      <rect x="14" y="-4" width="12" height="8" rx="2" fill="#888"/>
+      <rect x="12" y="-22" width="8" height="12" rx="2" fill="#888" transform="rotate(45,16,-16)"/>
+      <rect x="-20" y="10" width="8" height="12" rx="2" fill="#888" transform="rotate(45,-16,16)"/>
+      <rect x="10" y="10" width="8" height="12" rx="2" fill="#888" transform="rotate(-45,14,16)"/>
+      <rect x="-20" y="-22" width="8" height="12" rx="2" fill="#888" transform="rotate(-45,-16,-16)"/>
+    </g>
+  </g>
+  <!-- "SF" text -->
+  <text x="128" y="220" font-family="sans-serif" font-size="28" font-weight="bold" fill="#666" text-anchor="middle">SONG FACTORY</text>
+</svg>
