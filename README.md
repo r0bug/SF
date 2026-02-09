@@ -10,7 +10,7 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
 - **Song Library** — Browse, search, and filter songs by status. Includes browser automation queue for submitting songs to lalals.com and downloading results.
 - **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and disc burning via cdrdao/wodim.
-- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, browser automation paths, Xvfb virtual display, and network diagnostics.
+- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, browser automation paths, Xvfb virtual display, network diagnostics, and database backup/restore.
 
 ## Tech Stack
 
@@ -55,6 +55,10 @@ On first launch, the app creates a SQLite database at `~/.songfactory/songfactor
 2. **Lalals.com Credentials** — Email/password for browser automation song submission.
 3. **MusicGPT API Key** — For direct API submission mode (alternative to browser automation).
 4. **Download Directory** — Where generated audio files are saved (default: `~/Music/SongFactory`).
+
+### Backup & Restore
+
+Database backups are stored as timestamped files (`songfactory_backup_YYYYMMDD_HHMMSS.db`) in the download directory. Use **Backup Now** in Settings to create a backup, or **Restore from Backup** to recover from one. On a fresh install, the app automatically detects backups in the download directory and offers to restore.
 
 ## Project Structure
 

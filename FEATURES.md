@@ -163,3 +163,8 @@ Create audio CD projects with full CD-TEXT metadata and CD-Extra data sessions.
 ### Diagnostics
 - Network sniffer (60-second browser traffic capture)
 - Log viewers for sniffer and automation logs
+
+### Backup & Restore
+- **Backup Now** — Creates a timestamped copy of the database in the download directory using SQLite's online backup API (safe while the app is running)
+- **Restore from Backup** — Lists available backups (newest first with date and size), or browse for a `.db` file manually. Creates a safety copy (`songfactory_pre_restore.db`) before overwriting.
+- **Startup Detection** — On fresh install (no user-created songs), automatically scans the download directory for backups and offers to restore the newest one. This allows backups stored alongside music files to travel to a new machine.

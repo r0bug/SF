@@ -8,9 +8,12 @@ application configuration.
 Database location: ~/.songfactory/songfactory.db
 """
 
+import glob as _glob
 import json
-import sqlite3
 import os
+import shutil
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Optional
@@ -221,6 +224,101 @@ class Database:
         if self._conn:
             self._conn.close()
             self._conn = None
+
+    # ------------------------------------------------------------------
+    # Backup & Restore
+    # ------------------------------------------------------------------
+
+    def backup_to(self, directory: str) -> str:
+        """Create a timestamped backup of the live database.
+
+        Uses the SQLite ``conn.backup()`` API so it is safe to call while
+        the database is open and being written to.
+
+        Returns the full path to the created backup file.
+        """
+        os.makedirs(directory, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"songfactory_backup_{timestamp}.db"
+        dest_path = os.path.join(directory, filename)
+
+        dest_conn = sqlite3.connect(dest_path)
+        try:
+            self._conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+
+        return dest_path
+
+    def restore_from(self, backup_path: str) -> None:
+        """Replace the current database with the contents of *backup_path*.
+
+        Before overwriting, creates a safety copy of the current database
+        as ``songfactory_pre_restore.db`` in the database directory.
+        After copying, removes any leftover WAL/SHM files, reopens the
+        connection, and runs table creation / migration.
+        """
+        if not os.path.isfile(backup_path):
+            raise FileNotFoundError(f"Backup file not found: {backup_path}")
+
+        # Close current connection
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+        # Safety copy of current database
+        safety_path = os.path.join(str(DB_DIR), "songfactory_pre_restore.db")
+        if os.path.isfile(self._db_path):
+            shutil.copy2(self._db_path, safety_path)
+
+        # Overwrite with backup
+        shutil.copy2(backup_path, self._db_path)
+
+        # Remove stale WAL/SHM files (they belong to the old database)
+        for suffix in ("-wal", "-shm"):
+            wal_path = self._db_path + suffix
+            if os.path.exists(wal_path):
+                os.remove(wal_path)
+
+        # Reopen and ensure schema is up to date
+        self._conn = sqlite3.connect(self._db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL;")
+        self._conn.execute("PRAGMA foreign_keys=ON;")
+        self._create_tables()
+
+    @staticmethod
+    def detect_backups(directory: str) -> list[dict]:
+        """Scan *directory* for Song Factory backup files.
+
+        Returns a list of dicts sorted newest-first, each containing:
+        ``path``, ``filename``, ``date`` (human-readable), ``size`` (bytes).
+        """
+        if not os.path.isdir(directory):
+            return []
+
+        pattern = os.path.join(directory, "songfactory_backup_*.db")
+        matches = _glob.glob(pattern)
+
+        results: list[dict] = []
+        for path in matches:
+            filename = os.path.basename(path)
+            # Extract date from filename: songfactory_backup_YYYYMMDD_HHMMSS.db
+            try:
+                parts = filename.replace("songfactory_backup_", "").replace(".db", "")
+                dt = datetime.strptime(parts, "%Y%m%d_%H%M%S")
+                date_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                date_str = "Unknown"
+            results.append({
+                "path": path,
+                "filename": filename,
+                "date": date_str,
+                "size": os.path.getsize(path),
+            })
+
+        results.sort(key=lambda r: r["filename"], reverse=True)
+        return results
 
     # ==================================================================
     # LORE

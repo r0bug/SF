@@ -1,7 +1,7 @@
 import sys
 import os
 from PyQt6.QtWidgets import (
-    QMainWindow, QTabWidget, QStatusBar, QLabel, QApplication
+    QMainWindow, QTabWidget, QStatusBar, QLabel, QApplication, QMessageBox
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -230,6 +230,7 @@ class MainWindow(QMainWindow):
 
         self.db = Database()
         self._seed_if_needed()
+        self._check_for_backup()
 
         self._setup_tabs()
         self._setup_status_bar()
@@ -277,6 +278,48 @@ class MainWindow(QMainWindow):
                 lore_snapshot='',
                 status=song.get('status', 'completed'),
             )
+
+    def _check_for_backup(self):
+        """On a fresh install (no songs beyond seed data), look for a backup
+        in the download directory and offer to restore it."""
+        # Only trigger on a genuinely fresh database — seed songs have
+        # status 'completed' and were just inserted by _seed_if_needed,
+        # so we check whether there are any non-seed songs (i.e. user data).
+        song_count = self.db.get_song_count()
+        seed_count = len(SEED_SONGS)
+
+        # If the user has added any songs beyond the seeds, skip
+        if song_count > seed_count:
+            return
+
+        # Read download directory from config (may not be set yet on fresh install)
+        _DEFAULT_DOWNLOAD_DIR = os.path.join(
+            os.path.expanduser("~"), "Music", "SongFactory"
+        )
+        download_dir = self.db.get_config("download_dir", _DEFAULT_DOWNLOAD_DIR)
+
+        backups = Database.detect_backups(download_dir)
+        if not backups:
+            return
+
+        newest = backups[0]
+        answer = QMessageBox.question(
+            self,
+            "Backup Found",
+            f"A Song Factory backup was found:\n\n"
+            f"  {newest['filename']}\n"
+            f"  Date: {newest['date']}\n"
+            f"  Location: {download_dir}\n\n"
+            "Would you like to restore it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            self.db.restore_from(newest["path"])
+        except Exception:
+            pass  # Non-fatal; the app will still start with current DB
 
     def _setup_tabs(self):
         self.tabs = QTabWidget()

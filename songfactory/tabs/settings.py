@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QCheckBox,
     QFileDialog,
+    QInputDialog,
     QMessageBox,
     QScrollArea,
 )
@@ -336,6 +337,37 @@ class SettingsTab(QWidget):
         diag_layout.addStretch()
         self.diag_group.setLayout(diag_layout)
         root.addWidget(self.diag_group)
+
+        # ---- Backup & Restore group ----
+        backup_group = QGroupBox("Backup && Restore")
+        backup_layout = QHBoxLayout()
+        backup_layout.setSpacing(10)
+
+        self.backup_btn = QPushButton("Backup Now")
+        self.backup_btn.setToolTip(
+            "Create a timestamped copy of the database\n"
+            "in your download directory."
+        )
+        self.backup_btn.clicked.connect(self._backup_now)
+        backup_layout.addWidget(self.backup_btn)
+
+        self.restore_btn = QPushButton("Restore from Backup...")
+        self.restore_btn.setToolTip(
+            "Replace the current database with a previously\n"
+            "saved backup file."
+        )
+        self.restore_btn.clicked.connect(self._restore_from_backup)
+        backup_layout.addWidget(self.restore_btn)
+
+        self.backup_status_label = QLabel("")
+        self.backup_status_label.setStyleSheet(
+            "color: #888888; font-size: 12px; font-style: italic;"
+        )
+        backup_layout.addWidget(self.backup_status_label, 1)
+
+        backup_layout.addStretch()
+        backup_group.setLayout(backup_layout)
+        root.addWidget(backup_group)
 
         # ---- Bottom: Save button + status label ----
         bottom_row = QHBoxLayout()
@@ -731,3 +763,124 @@ class SettingsTab(QWidget):
                 "Automation log not found.\n\n"
                 f"Expected at: {log_path}",
             )
+
+    # ------------------------------------------------------------------
+    # Backup & Restore
+    # ------------------------------------------------------------------
+
+    def _get_download_dir(self) -> str:
+        """Return the configured download directory (or the default)."""
+        d = self.download_dir_edit.text().strip()
+        return d if d else _DEFAULT_DOWNLOAD_DIR
+
+    def _backup_now(self):
+        """Create a database backup in the download directory."""
+        download_dir = self._get_download_dir()
+        try:
+            path = self.db.backup_to(download_dir)
+            filename = os.path.basename(path)
+            self.backup_status_label.setText(f"Last backup: {filename}")
+            self.backup_status_label.setStyleSheet(
+                "color: #4CAF50; font-size: 12px; font-style: italic;"
+            )
+            QMessageBox.information(
+                self,
+                "Backup Created",
+                f"Database backed up successfully.\n\n{path}",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Backup Failed",
+                f"Could not create backup:\n\n{exc}",
+            )
+
+    def _restore_from_backup(self):
+        """Let the user pick a backup and restore it."""
+        from database import Database
+
+        download_dir = self._get_download_dir()
+        backups = Database.detect_backups(download_dir)
+
+        selected_path = None
+
+        if backups:
+            # Build choice list: "2026-02-08 14:30:22  (1.2 MB)"
+            items = []
+            for b in backups:
+                size_mb = b["size"] / (1024 * 1024)
+                items.append(f"{b['date']}  ({size_mb:.1f} MB)  —  {b['filename']}")
+
+            choice, ok = QInputDialog.getItem(
+                self,
+                "Restore from Backup",
+                "Select a backup to restore (newest first):",
+                items,
+                0,
+                False,
+            )
+            if ok and choice:
+                idx = items.index(choice)
+                selected_path = backups[idx]["path"]
+            elif ok:
+                return  # cancelled
+            else:
+                # User cancelled — offer to browse manually
+                selected_path = self._browse_for_backup()
+        else:
+            # No backups found — offer to browse
+            answer = QMessageBox.question(
+                self,
+                "No Backups Found",
+                f"No backup files found in:\n{download_dir}\n\n"
+                "Would you like to browse for a backup file?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                selected_path = self._browse_for_backup()
+
+        if not selected_path:
+            return
+
+        # Confirm before restoring
+        confirm = QMessageBox.warning(
+            self,
+            "Confirm Restore",
+            "This will replace your current database with the selected backup.\n\n"
+            "A safety copy of the current database will be saved in\n"
+            "~/.songfactory/songfactory_pre_restore.db\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            self.db.restore_from(selected_path)
+            self.backup_status_label.setText("Database restored — restart recommended")
+            self.backup_status_label.setStyleSheet(
+                "color: #2196F3; font-size: 12px; font-style: italic;"
+            )
+            QMessageBox.information(
+                self,
+                "Restore Complete",
+                "Database restored successfully.\n\n"
+                "Please restart Song Factory for all changes to take effect.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Restore Failed",
+                f"Could not restore database:\n\n{exc}",
+            )
+
+    def _browse_for_backup(self) -> str | None:
+        """Open a file dialog to pick a .db backup file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Backup File",
+            self._get_download_dir(),
+            "SQLite Database (*.db);;All Files (*)",
+        )
+        return path if path else None
