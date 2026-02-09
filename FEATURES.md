@@ -47,8 +47,9 @@ Manage world-building lore entries used as context for song generation.
 - **Toggle Category** — Enable/disable all entries in the currently filtered category. Button label dynamically shows "Enable {category}" or "Disable {category}" based on majority state. Only enabled when a specific category filter is selected.
 
 ### Lore Presets
-- **Save** — Prompts for a name and saves all currently active lore entry IDs as a preset
 - **Apply** — Deactivates all lore, then activates only the entries saved in the selected preset
+- **Save New** — Prompts for a name and saves all currently active lore entry IDs as a new preset
+- **Update** — Overwrites the selected preset with the currently active lore entries (with confirmation)
 - **Delete** — Removes the selected preset after confirmation (does not affect lore entries)
 
 ### Editor

@@ -264,12 +264,22 @@ class LoreEditorTab(QWidget):
         )
         preset_btn_row.addWidget(self.preset_apply_btn)
 
-        self.preset_save_btn = QPushButton("Save")
+        self.preset_save_btn = QPushButton("Save New")
         self.preset_save_btn.setFixedHeight(28)
         self.preset_save_btn.setStyleSheet(
             f"QPushButton {{ font-size: 11px; padding: 2px 8px; }}"
         )
         preset_btn_row.addWidget(self.preset_save_btn)
+
+        self.preset_update_btn = QPushButton("Update")
+        self.preset_update_btn.setFixedHeight(28)
+        self.preset_update_btn.setStyleSheet(
+            f"QPushButton {{ font-size: 11px; padding: 2px 8px; }}"
+        )
+        self.preset_update_btn.setToolTip(
+            "Overwrite the selected preset with the currently active lore entries"
+        )
+        preset_btn_row.addWidget(self.preset_update_btn)
 
         self.preset_delete_btn = QPushButton("Delete")
         self.preset_delete_btn.setFixedHeight(28)
@@ -371,6 +381,7 @@ class LoreEditorTab(QWidget):
         # Preset buttons
         self.preset_apply_btn.clicked.connect(self._on_preset_apply)
         self.preset_save_btn.clicked.connect(self._on_preset_save)
+        self.preset_update_btn.clicked.connect(self._on_preset_update)
         self.preset_delete_btn.clicked.connect(self._on_preset_delete)
 
         # Editor fields mark the entry as dirty.
@@ -664,9 +675,11 @@ class LoreEditorTab(QWidget):
         if not self._presets_cache:
             self.preset_combo.addItem("(no presets)")
             self.preset_apply_btn.setEnabled(False)
+            self.preset_update_btn.setEnabled(False)
             self.preset_delete_btn.setEnabled(False)
             return
         self.preset_apply_btn.setEnabled(True)
+        self.preset_update_btn.setEnabled(True)
         self.preset_delete_btn.setEnabled(True)
         for preset in self._presets_cache:
             self.preset_combo.addItem(preset["name"], preset["id"])
@@ -705,6 +718,35 @@ class LoreEditorTab(QWidget):
                 f"Could not save preset:\n\n{exc}",
             )
             return
+        self.refresh_presets()
+
+    def _on_preset_update(self):
+        """Overwrite the selected preset with the currently active lore entries."""
+        preset_id = self.preset_combo.currentData()
+        if preset_id is None:
+            return
+        preset_name = self.preset_combo.currentText()
+
+        active_lore = self.db.get_active_lore()
+        if not active_lore:
+            QMessageBox.warning(
+                self, "No Active Lore",
+                "Activate at least one lore entry before updating a preset.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Update Preset",
+            f'Overwrite preset "{preset_name}" with the current active lore entries?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        lore_ids = [e["id"] for e in active_lore]
+        self.db.update_lore_preset(preset_id, lore_ids=lore_ids)
         self.refresh_presets()
 
     def _on_preset_delete(self):
