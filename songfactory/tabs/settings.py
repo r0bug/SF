@@ -312,6 +312,50 @@ class SettingsTab(QWidget):
         self.auto_group.setLayout(auto_form)
         root.addWidget(self.auto_group)
 
+        # ---- DistroKid Settings group ----
+        dk_group = QGroupBox("DistroKid (Distribution)")
+        dk_form = QFormLayout()
+        dk_form.setSpacing(10)
+        dk_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self.dk_email_edit = QLineEdit()
+        self.dk_email_edit.setPlaceholderText("your@email.com")
+        dk_form.addRow("DistroKid Email:", self.dk_email_edit)
+
+        self.dk_password_edit = QLineEdit()
+        self.dk_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.dk_password_edit.setPlaceholderText("DistroKid password")
+        dk_form.addRow("DistroKid Password:", self.dk_password_edit)
+
+        self.dk_artist_edit = QLineEdit()
+        self.dk_artist_edit.setPlaceholderText("Yakima Finds")
+        self.dk_artist_edit.setToolTip(
+            "Default artist name for DistroKid uploads.\n"
+            "Must match a registered artist on your DistroKid account."
+        )
+        dk_form.addRow("Default Artist:", self.dk_artist_edit)
+
+        self.dk_songwriter_edit = QLineEdit()
+        self.dk_songwriter_edit.setPlaceholderText("Legal name of songwriter")
+        self.dk_songwriter_edit.setToolTip(
+            "Legal name of the songwriter (required by DistroKid).\n"
+            "This is NOT the stage name — use your real legal name."
+        )
+        dk_form.addRow("Default Songwriter:", self.dk_songwriter_edit)
+
+        dk_hint = QLabel(
+            "DistroKid requires email + password + 2FA on first login.\n"
+            "The browser session will be saved for future uploads."
+        )
+        dk_hint.setStyleSheet(
+            "color: #888888; font-size: 11px; font-style: italic;"
+        )
+        dk_hint.setWordWrap(True)
+        dk_form.addRow("", dk_hint)
+
+        dk_group.setLayout(dk_form)
+        root.addWidget(dk_group)
+
         # ---- Diagnostics group ----
         self.diag_group = QGroupBox("Diagnostics")
         diag_layout = QHBoxLayout()
@@ -448,6 +492,20 @@ class SettingsTab(QWidget):
         self.submission_mode_combo.setCurrentIndex(max(idx, 0))
         self._apply_submission_mode()
 
+        # DistroKid
+        self.dk_email_edit.setText(
+            self.db.get_config("dk_email", "")
+        )
+        self.dk_password_edit.setText(
+            self.db.get_config("dk_password", "")
+        )
+        self.dk_artist_edit.setText(
+            self.db.get_config("dk_artist", "Yakima Finds")
+        )
+        self.dk_songwriter_edit.setText(
+            self.db.get_config("dk_songwriter", "")
+        )
+
     def save_settings(self):
         """Persist all field values to the database config table."""
         self.db.set_config("api_key", self.api_key_edit.text().strip())
@@ -479,6 +537,14 @@ class SettingsTab(QWidget):
         self.db.set_config(
             "submission_mode", self.submission_mode_combo.currentData()
         )
+
+        # DistroKid
+        self.db.set_config("dk_email", self.dk_email_edit.text().strip())
+        self.db.set_config("dk_password", self.dk_password_edit.text())
+        self.db.set_config(
+            "dk_artist", self.dk_artist_edit.text().strip() or "Yakima Finds"
+        )
+        self.db.set_config("dk_songwriter", self.dk_songwriter_edit.text().strip())
 
         # Show temporary success message
         self.status_label.setText("Settings saved!")

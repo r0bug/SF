@@ -10,7 +10,8 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
 - **Song Library** — Browse, search, and filter songs by status. Includes browser automation queue for submitting songs to lalals.com and downloading results.
 - **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and disc burning via cdrdao/wodim.
-- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, browser automation paths, Xvfb virtual display, network diagnostics, and database backup/restore.
+- **Distribution** — Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation. Includes release form, genre mapping, cover art validation/resize, AI disclosure, and upload queue with login/2FA support.
+- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, DistroKid credentials, browser automation paths, Xvfb virtual display, network diagnostics, and database backup/restore.
 
 ## Tech Stack
 
@@ -20,6 +21,7 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 | AI Backend | Anthropic API (Claude) |
 | Database | SQLite (WAL mode) |
 | Music Generation | lalals.com (browser automation + MusicGPT API) |
+| Distribution | DistroKid (browser automation) |
 | Browser Automation | Playwright |
 | CD Burning | cdrdao, wodim |
 | Web Search | DuckDuckGo Search |
@@ -54,7 +56,8 @@ On first launch, the app creates a SQLite database at `~/.songfactory/songfactor
 
 2. **Lalals.com Credentials** — Email/password for browser automation song submission.
 3. **MusicGPT API Key** — For direct API submission mode (alternative to browser automation).
-4. **Download Directory** — Where generated audio files are saved (default: `~/Music/SongFactory`).
+4. **DistroKid Credentials** — Email, password, default artist name, and songwriter legal name for distribution uploads.
+5. **Download Directory** — Where generated audio files are saved (default: `~/Music/SongFactory`).
 
 ### Backup & Restore
 
@@ -80,11 +83,15 @@ songfactory/
     library.py             # Song Library tab — search, filter, queue, automation
     settings.py            # Settings tab — API keys, paths, diagnostics
     cd_master.py           # CD Master tab — projects, tracks, art, burning
+    distribution.py        # Distribution tab — DistroKid upload queue & form
     history_import_dialog.py  # Dialog for importing lalals.com history
     song_picker_dialog.py  # Dialog for selecting songs (CD track picker)
   automation/
     browser_worker.py      # LalalsWorker QThread — submit/download pipeline
     lalals_driver.py       # Playwright browser driver for lalals.com
+    distrokid_driver.py    # Playwright browser driver for distrokid.com
+    distrokid_worker.py    # DistroKid upload QThread — login/2FA, form fill, upload
+    cover_art_preparer.py  # Cover art validation and resize for distribution
     download_manager.py    # File download utilities (Playwright + HTTP)
     api_worker.py          # MusicGPT API worker thread
     history_importer.py    # Lalals.com history import thread

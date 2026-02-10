@@ -116,6 +116,44 @@ Key-value store for application settings.
 | download_dir | Download directory path |
 | max_prompt_length | Max prompt character count |
 | use_xvfb | "true" or "false" |
+| dk_email | DistroKid login email |
+| dk_password | DistroKid login password |
+| dk_artist | Default DistroKid artist name |
+| dk_songwriter | Default songwriter legal name |
+
+---
+
+## distributions
+
+Distribution records for uploading songs to streaming platforms via DistroKid.
+
+| Column | Type | Default | Description |
+|--------|------|---------|-------------|
+| id | INTEGER | PK AUTOINCREMENT | Unique identifier |
+| song_id | INTEGER | FK → songs(id) NOT NULL | Associated song |
+| distributor | TEXT | 'distrokid' | Distribution service name |
+| release_type | TEXT | 'single' | Release type (single/album) |
+| artist_name | TEXT | 'Yakima Finds' | Artist name for release |
+| album_title | TEXT | NULL | Release/album title |
+| songwriter | TEXT | NOT NULL | Songwriter legal name |
+| language | TEXT | 'English' | Release language |
+| primary_genre | TEXT | NULL | Song Factory genre name (mapped to DK genre) |
+| cover_art_path | TEXT | NULL | Path to cover art file |
+| is_instrumental | BOOLEAN | 0 | Whether track is instrumental |
+| lyrics_submitted | TEXT | NULL | Plain text lyrics submitted with release |
+| release_date | TEXT | NULL | Release date (YYYY-MM-DD) |
+| record_label | TEXT | NULL | Record label name (Musician Plus+ only) |
+| ai_disclosure | BOOLEAN | 1 | AI-generated content disclosure |
+| distrokid_url | TEXT | NULL | DistroKid release URL after upload |
+| status | TEXT | 'draft' | Distribution status |
+| error_message | TEXT | NULL | Error description on failure |
+| notes | TEXT | NULL | User notes |
+| created_at | TIMESTAMP | CURRENT_TIMESTAMP | Creation time |
+| updated_at | TIMESTAMP | CURRENT_TIMESTAMP | Last modification time |
+
+### Status flow
+
+`draft` → `ready` → `uploading` → `submitted` → `live` / `error`
 
 ---
 

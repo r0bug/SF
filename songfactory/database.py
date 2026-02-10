@@ -124,6 +124,32 @@ CREATE TABLE IF NOT EXISTS cd_tracks (
 );
 """
 
+_CREATE_DISTRIBUTIONS = """
+CREATE TABLE IF NOT EXISTS distributions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id           INTEGER NOT NULL REFERENCES songs(id),
+    distributor       TEXT NOT NULL DEFAULT 'distrokid',
+    release_type      TEXT DEFAULT 'single',
+    artist_name       TEXT DEFAULT 'Yakima Finds',
+    album_title       TEXT,
+    songwriter        TEXT NOT NULL,
+    language          TEXT DEFAULT 'English',
+    primary_genre     TEXT,
+    cover_art_path    TEXT,
+    is_instrumental   BOOLEAN DEFAULT 0,
+    lyrics_submitted  TEXT,
+    release_date      TEXT,
+    record_label      TEXT,
+    ai_disclosure     BOOLEAN DEFAULT 1,
+    distrokid_url     TEXT,
+    status            TEXT DEFAULT 'draft',
+    error_message     TEXT,
+    notes             TEXT,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 
 class Database:
     """SQLite database interface for the Song Factory application."""
@@ -153,6 +179,7 @@ class Database:
             cur.execute(_CREATE_LORE_PRESETS)
             cur.execute(_CREATE_CD_PROJECTS)
             cur.execute(_CREATE_CD_TRACKS)
+            cur.execute(_CREATE_DISTRIBUTIONS)
         self._migrate_songs_table()
 
     def _migrate_songs_table(self) -> None:
@@ -903,6 +930,102 @@ class Database:
                     "UPDATE cd_tracks SET track_number = ? WHERE id = ? AND project_id = ?;",
                     (idx, tid, project_id),
                 )
+
+    # ==================================================================
+    # DISTRIBUTIONS
+    # ==================================================================
+
+    def get_all_distributions(self) -> list[dict]:
+        """Return every distribution, most recent first."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM distributions ORDER BY created_at DESC;"
+            )
+            return self._rows_to_dicts(cur.fetchall())
+
+    def get_distribution(self, dist_id: int) -> Optional[dict]:
+        """Return a single distribution by id, or None."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM distributions WHERE id = ?;", (dist_id,)
+            )
+            return self._row_to_dict(cur.fetchone())
+
+    def get_distributions_for_song(self, song_id: int) -> list[dict]:
+        """Return all distributions for a given song."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM distributions WHERE song_id = ? "
+                "ORDER BY created_at DESC;",
+                (song_id,),
+            )
+            return self._rows_to_dicts(cur.fetchall())
+
+    def get_distributions_by_status(self, status: str) -> list[dict]:
+        """Return distributions filtered by status."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM distributions WHERE status = ? "
+                "ORDER BY created_at DESC;",
+                (status,),
+            )
+            return self._rows_to_dicts(cur.fetchall())
+
+    def add_distribution(self, song_id: int, songwriter: str, **kwargs: Any) -> int:
+        """Insert a new distribution and return its id."""
+        allowed = {
+            "distributor", "release_type", "artist_name", "album_title",
+            "language", "primary_genre", "cover_art_path", "is_instrumental",
+            "lyrics_submitted", "release_date", "record_label",
+            "ai_disclosure", "distrokid_url", "status", "error_message",
+            "notes",
+        }
+        fields = {k: v for k, v in kwargs.items() if k in allowed}
+        columns = ["song_id", "songwriter"] + list(fields.keys())
+        placeholders = ", ".join("?" for _ in columns)
+        col_str = ", ".join(columns)
+        values = [song_id, songwriter] + list(fields.values())
+
+        with self._cursor() as cur:
+            cur.execute(
+                f"INSERT INTO distributions ({col_str}) VALUES ({placeholders});",
+                values,
+            )
+            return cur.lastrowid
+
+    def update_distribution(self, dist_id: int, **kwargs: Any) -> bool:
+        """Update one or more columns of a distribution.  Returns True if updated."""
+        if not kwargs:
+            return False
+        allowed = {
+            "song_id", "distributor", "release_type", "artist_name",
+            "album_title", "songwriter", "language", "primary_genre",
+            "cover_art_path", "is_instrumental", "lyrics_submitted",
+            "release_date", "record_label", "ai_disclosure",
+            "distrokid_url", "status", "error_message", "notes",
+        }
+        fields = {k: v for k, v in kwargs.items() if k in allowed}
+        if not fields:
+            return False
+
+        set_clause = ", ".join(f"{col} = ?" for col in fields)
+        set_clause += ", updated_at = CURRENT_TIMESTAMP"
+        values = list(fields.values()) + [dist_id]
+
+        with self._cursor() as cur:
+            cur.execute(
+                f"UPDATE distributions SET {set_clause} WHERE id = ?;",
+                values,
+            )
+            return cur.rowcount > 0
+
+    def delete_distribution(self, dist_id: int) -> bool:
+        """Delete a distribution by id.  Returns True if deleted."""
+        with self._cursor() as cur:
+            cur.execute(
+                "DELETE FROM distributions WHERE id = ?;", (dist_id,)
+            )
+            return cur.rowcount > 0
 
     # ==================================================================
     # UTILITY

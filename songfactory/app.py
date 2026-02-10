@@ -15,6 +15,7 @@ from tabs.library import SongLibraryTab
 from tabs.settings import SettingsTab
 from tabs.lore_discovery import LoreDiscoveryTab
 from tabs.cd_master import CDMasterTab
+from tabs.distribution import DistributionTab
 
 
 DARK_STYLESHEET = """
@@ -332,6 +333,7 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab(self.db)
         self.discovery_tab = LoreDiscoveryTab(self.db)
         self.cd_master_tab = CDMasterTab(self.db)
+        self.distribution_tab = DistributionTab(self.db)
 
         self.tabs.addTab(self.creator_tab, "🎵 Song Creator")
         self.tabs.addTab(self.lore_tab, "📖 Lore Editor")
@@ -339,6 +341,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.genre_tab, "🎸 Genre Manager")
         self.tabs.addTab(self.library_tab, "🗄️ Song Library")
         self.tabs.addTab(self.cd_master_tab, "💿 CD Master")
+        self.tabs.addTab(self.distribution_tab, "📤 Distribution")
         self.tabs.addTab(self.settings_tab, "⚙️ Settings")
 
         # Refresh tabs when switching to them
@@ -359,6 +362,8 @@ class MainWindow(QMainWindow):
             self.library_tab.load_songs()
         elif widget is self.cd_master_tab:
             self.cd_master_tab.refresh_projects()
+        elif widget is self.distribution_tab:
+            self.distribution_tab.load_distributions()
         elif widget is self.settings_tab:
             self.settings_tab.load_settings()
         # discovery_tab has no refresh needed on tab switch

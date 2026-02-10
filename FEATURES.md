@@ -138,6 +138,66 @@ Create audio CD projects with full CD-TEXT metadata and CD-Extra data sessions.
 
 ---
 
+## Distribution
+
+Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation.
+
+### Distribution Queue
+- List of distribution records filtered by status (draft, ready, uploading, submitted, live, error)
+- Create new distributions from completed songs
+- Delete unwanted distribution records
+
+### Release Form
+- **Song Selection** — Dropdown of all songs (with audio file indicator)
+- **Artist Name** — Defaults to configured DistroKid artist (must match registered DK artist)
+- **Release Title** — Defaults to song title for singles
+- **Songwriter** — Legal name (required by DistroKid)
+- **Genre** — Song Factory genre with automatic mapping to DistroKid's genre list (23 mappings)
+- **Language** — Dropdown with common languages
+- **Cover Art** — File picker with preview, validation (min 1000x1000, square, JPG/PNG), auto-resize to 3000x3000
+- **Instrumental Flag** — Checkbox for instrumental tracks
+- **AI Disclosure** — Checkbox for AI-generated content (checked by default)
+- **Release Date** — Calendar picker
+- **Record Label** — Optional
+- **Lyrics** — Auto-populated from song, submitted as plain text
+
+### Genre Mapping (Song Factory → DistroKid)
+All 23 Song Factory genres are mapped to DistroKid's fixed genre list:
+- Pop → Pop, Hip-Hop → Hip-Hop/Rap, Rock → Rock, Country → Country
+- EDM/Dance → Dance, R&B/Soul → R&B/Soul, Folk/Americana → Singer/Songwriter
+- Afrobeats → Worldwide, K-Pop → K-Pop, Reggae → Reggae, Funk → Funk
+- Alt-Rock/Indie Pop-Rock → Alternative, Electropop → Electronic
+- Unmapped genres fall back to "Pop"
+
+### Cover Art Preparation
+- Validates format (JPG/PNG only), dimensions (minimum 1000x1000), and aspect ratio (must be square)
+- Auto-resizes to 3000x3000 using Lanczos resampling (requires Pillow)
+
+### Upload Workflow
+1. Mark distribution as "Ready" (validates required fields)
+2. Click "Upload Now" — launches Playwright browser with persistent profile
+3. If not logged in, opens DistroKid sign-in page for manual login + 2FA
+4. Worker polls until login completes, then fills the upload form automatically
+5. Uploads audio file and cover art, submits the release
+6. Status updates: draft → ready → uploading → submitted → live / error
+
+### Authentication
+- DistroKid requires email/password + mandatory 2FA (6-digit code to email)
+- Persistent browser profile at `~/.songfactory/dk_browser_profile` preserves session cookies
+- Same manual login pattern as lalals.com automation
+
+### Distribution Statuses
+| Status | Description |
+|--------|-------------|
+| draft | Created but not validated |
+| ready | Validated, waiting for upload |
+| uploading | Browser automation in progress |
+| submitted | Successfully uploaded to DistroKid |
+| live | Confirmed live on streaming platforms |
+| error | Upload failed (see error message) |
+
+---
+
 ## Settings
 
 ### API Settings
@@ -156,6 +216,11 @@ Create audio CD projects with full CD-TEXT metadata and CD-Extra data sessions.
 ### General
 - Download directory (default: ~/Music/SongFactory)
 - Max prompt length
+
+### DistroKid (Distribution)
+- DistroKid email and password
+- Default artist name (must match registered DistroKid artist)
+- Default songwriter legal name (required for all releases)
 
 ### Automation
 - Xvfb virtual display toggle for headless browser operation
