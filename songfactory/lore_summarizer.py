@@ -7,6 +7,8 @@ lore entries focusing on names, places, stories, and cultural details.
 
 from anthropic import Anthropic
 
+from ai_models import DEFAULT_MODEL
+
 
 _SYSTEM_PROMPT = """\
 You are a research assistant for a songwriter who writes songs about Yakima, Washington \
@@ -30,9 +32,9 @@ Respond with ONLY the summary text, no preamble or extra formatting."""
 class LoreSummarizer:
     """Summarizes web content into lore entries via the Anthropic API."""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, api_key: str, model: str | None = None):
         self.client = Anthropic(api_key=api_key)
-        self.model = model
+        self.model = model or DEFAULT_MODEL
 
     def summarize(
         self,

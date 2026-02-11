@@ -1,19 +1,67 @@
 """Lalals.com page interaction driver for Song Factory automation."""
 
 import json
+import re
 import time
 import logging
+from enum import Enum
 from pathlib import Path
 from playwright.sync_api import Page, Browser, BrowserContext, Download, expect
 
 logger = logging.getLogger("songfactory.automation")
 
 STATE_FILE = Path.home() / ".songfactory" / "browser_state.json"
+SCREENSHOT_DIR = Path.home() / ".songfactory" / "screenshots"
+MAX_SCREENSHOTS = 20
+
+
+class ErrorCategory(Enum):
+    """Categorizes LalalsDriverError for actionable user messages."""
+    SELECTOR_NOT_FOUND = "selector_not_found"
+    SESSION_EXPIRED = "session_expired"
+    API_TIMEOUT = "api_timeout"
+    DOWNLOAD_FAILED = "download_failed"
+    NETWORK_ERROR = "network_error"
+
+
+# Map error categories to user-friendly action messages
+ERROR_MESSAGES = {
+    ErrorCategory.SELECTOR_NOT_FOUND: (
+        "UI selectors no longer match the lalals.com page. "
+        "The site may have been updated. Check screenshots for details."
+    ),
+    ErrorCategory.SESSION_EXPIRED: (
+        "Your lalals.com login session has expired. "
+        "Please log in again."
+    ),
+    ErrorCategory.API_TIMEOUT: (
+        "The lalals.com API was too slow to respond. "
+        "Try again or check your internet connection."
+    ),
+    ErrorCategory.DOWNLOAD_FAILED: (
+        "Generated audio files could not be downloaded. "
+        "Try clicking Refresh again after a few seconds."
+    ),
+    ErrorCategory.NETWORK_ERROR: (
+        "Network connection lost during processing. "
+        "Check your internet connection and try again."
+    ),
+}
 
 
 class LalalsDriverError(Exception):
     """Raised when a lalals.com interaction fails."""
-    pass
+
+    def __init__(self, message: str, category: ErrorCategory | None = None):
+        super().__init__(message)
+        self.category = category
+
+    @property
+    def user_message(self) -> str:
+        """Return an actionable message for the user."""
+        if self.category and self.category in ERROR_MESSAGES:
+            return ERROR_MESSAGES[self.category]
+        return str(self)
 
 
 class LalalsDriver:
@@ -47,6 +95,43 @@ class LalalsDriver:
             except Exception:
                 continue
         return None
+
+    # ------------------------------------------------------------------
+    # Debug screenshots
+    # ------------------------------------------------------------------
+
+    def _capture_debug_screenshot(self, context_name: str) -> str | None:
+        """Save a debug screenshot and return the file path.
+
+        Keeps at most MAX_SCREENSHOTS files, rotating the oldest.
+
+        Args:
+            context_name: Short label for the screenshot (e.g. "fill_prompt_failed").
+
+        Returns:
+            Path to the saved screenshot, or None on failure.
+        """
+        try:
+            SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Rotate old screenshots
+            existing = sorted(SCREENSHOT_DIR.glob("*.png"))
+            while len(existing) >= MAX_SCREENSHOTS:
+                oldest = existing.pop(0)
+                try:
+                    oldest.unlink()
+                except OSError:
+                    pass
+
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"{ts}_{context_name}.png"
+            path = SCREENSHOT_DIR / filename
+            self.page.screenshot(path=str(path), full_page=True)
+            logger.info(f"Debug screenshot saved: {path}")
+            return str(path)
+        except Exception as e:
+            logger.warning(f"Failed to capture screenshot: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Authentication
@@ -97,7 +182,10 @@ class LalalsDriver:
 
         while time.time() - start < timeout_s:
             if stop_flag and stop_flag():
-                raise LalalsDriverError("Login wait cancelled by user")
+                raise LalalsDriverError(
+                    "Login wait cancelled by user",
+                    category=ErrorCategory.SESSION_EXPIRED,
+                )
 
             try:
                 url = self.page.url
@@ -111,7 +199,8 @@ class LalalsDriver:
             self.page.wait_for_timeout(2000)
 
         raise LalalsDriverError(
-            f"Manual login timed out after {timeout_s}s"
+            f"Manual login timed out after {timeout_s}s",
+            category=ErrorCategory.SESSION_EXPIRED,
         )
 
     # ------------------------------------------------------------------
@@ -144,7 +233,8 @@ class LalalsDriver:
 
         if "/auth/" in self.page.url:
             raise LalalsDriverError(
-                "Redirected to login -- session may have expired"
+                "Redirected to login -- session may have expired",
+                category=ErrorCategory.SESSION_EXPIRED,
             )
         logger.info(f"On music page (url={self.page.url})")
 
@@ -186,7 +276,11 @@ class LalalsDriver:
                 textarea = None
 
         if textarea is None:
-            raise LalalsDriverError("Could not find prompt textarea on music page")
+            self._capture_debug_screenshot("fill_prompt_failed")
+            raise LalalsDriverError(
+                "Could not find prompt textarea on music page",
+                category=ErrorCategory.SELECTOR_NOT_FOUND,
+            )
 
         textarea.click()
         textarea.fill(prompt_text)
@@ -250,9 +344,11 @@ class LalalsDriver:
                 lyrics_area = all_textareas.nth(1)
 
         if lyrics_area is None:
+            self._capture_debug_screenshot("fill_lyrics_failed")
             raise LalalsDriverError(
                 "Could not find lyrics textarea after toggling. "
-                "The Lyrics section may not have opened."
+                "The Lyrics section may not have opened.",
+                category=ErrorCategory.SELECTOR_NOT_FOUND,
             )
 
         lyrics_area.click()
@@ -285,12 +381,21 @@ class LalalsDriver:
         )
 
         if generate_btn is None:
-            # Last resort: the right-most or last button is often the submit
-            logger.warning("Using last visible button as generate fallback")
-            generate_btn = self.page.locator("button").last
-
-        if generate_btn is None:
-            raise LalalsDriverError("Could not find generate button")
+            tried = [
+                "button[type='submit']",
+                "button:has-text('Generate')",
+                "button:has-text('Create')",
+                "button:has-text('Submit')",
+                "button[aria-label*='submit']",
+                "button[aria-label*='generate']",
+                "button[aria-label*='send']",
+            ]
+            self._capture_debug_screenshot("click_generate_failed")
+            raise LalalsDriverError(
+                "Could not find generate button. "
+                f"Tried selectors: {', '.join(tried)}",
+                category=ErrorCategory.SELECTOR_NOT_FOUND,
+            )
 
         generate_btn.click()
         logger.info("Generate button clicked")
@@ -324,7 +429,8 @@ class LalalsDriver:
 
         def on_response(response):
             url = response.url
-            if not ("musicgpt.com" in url or "byId" in url or "lalals.com/api" in url):
+            if not ("musicgpt.com" in url or "byId" in url or "lalals.com/api" in url
+                    or "lalals.com/_next/data" in url or "/api/" in url):
                 return
             try:
                 body = response.json()
@@ -805,13 +911,13 @@ class LalalsDriver:
                     metadata["conversion_id_2"] = meta2["conversion_id_1"]
 
             # Ensure we have S3 fallback URLs
-            S3_BASE = "https://lalals.s3.amazonaws.com/conversions"
+            S3_BASE = "https://lalals.s3.amazonaws.com/conversions/standard"
             cid1 = metadata.get("conversion_id_1") or conversion_id_1
             cid2 = metadata.get("conversion_id_2") or conversion_id_2
             if not metadata.get("audio_url_1") and cid1:
-                metadata["audio_url_1"] = f"{S3_BASE}/{cid1}.mp3"
+                metadata["audio_url_1"] = f"{S3_BASE}/{cid1}/{cid1}.mp3"
             if not metadata.get("audio_url_2") and cid2:
-                metadata["audio_url_2"] = f"{S3_BASE}/{cid2}.mp3"
+                metadata["audio_url_2"] = f"{S3_BASE}/{cid2}/{cid2}.mp3"
 
             logger.info(f"Fresh URLs: {[k for k in metadata if 'url' in k]}")
             return metadata
@@ -880,9 +986,19 @@ class LalalsDriver:
         # Intercept requests (for auth token) and responses (for task data)
         task_data = {}
 
+        def _is_api_url(url: str) -> bool:
+            """Match API URLs broadly — lalals routes through multiple domains."""
+            return (
+                "musicgpt.com" in url
+                or "devapi.lalals.com" in url
+                or "lalals.com/api" in url
+                or "lalals.com/_next/data" in url
+                or "/api/" in url
+            )
+
         def on_request(request):
             url = request.url
-            if "musicgpt.com" in url or "lalals.com/api" in url:
+            if _is_api_url(url):
                 headers = request.headers
                 auth = headers.get("authorization", "")
                 if auth and not task_data.get("auth_token"):
@@ -891,25 +1007,75 @@ class LalalsDriver:
 
         def on_response(response):
             url = response.url
-            if not ("musicgpt.com" in url or "lalals.com/api" in url):
+            method = response.request.method
+            status = response.status
+
+            # Skip static assets
+            skip_ext = ('.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg',
+                        '.woff', '.woff2', '.ttf', '.ico', '.webp', '.avif')
+            if any(url.split('?')[0].endswith(ext) for ext in skip_ext):
                 return
+
+            # Log all non-static responses for debugging API capture
+            if method in ("POST", "PUT", "PATCH"):
+                logger.info(f"{method} {status} {url[:150]}")
+            elif _is_api_url(url):
+                logger.info(f"{method} {status} {url[:150]}")
+
             try:
-                body = response.json()
-                if not isinstance(body, dict):
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct and "text" not in ct:
                     return
-                if task_data.get("task_id"):
-                    return  # already captured
+                body = response.json()
+            except Exception:
+                return
 
-                # Documented submit response: {task_id, conversion_id_1, conversion_id_2, eta}
-                src = body
-                if isinstance(body.get("data"), dict):
-                    src = body["data"]
+            if not isinstance(body, dict):
+                return
+            if task_data.get("task_id"):
+                return  # already captured
 
-                tid = src.get("task_id") or src.get("taskId")
+            logger.info(f"JSON keys: {list(body.keys())[:15]} from {url[:100]}")
+
+            # Search broadly for task_id in the response structure
+            def _extract_task_id(obj, depth=0):
+                """Recursively search for task_id-like keys."""
+                if depth > 3 or not isinstance(obj, dict):
+                    return None
+                for key in ("task_id", "taskId", "id", "conversionId",
+                            "conversion_id", "taskID"):
+                    val = obj.get(key)
+                    if val and isinstance(val, str) and len(val) > 10:
+                        return obj
+                # Check nested structures
+                for key in ("data", "conversion", "result", "response",
+                            "payload", "body", "item"):
+                    nested = obj.get(key)
+                    if isinstance(nested, dict):
+                        found = _extract_task_id(nested, depth + 1)
+                        if found:
+                            return found
+                    elif isinstance(nested, list) and nested:
+                        for item in nested[:3]:
+                            if isinstance(item, dict):
+                                found = _extract_task_id(item, depth + 1)
+                                if found:
+                                    return found
+                return None
+
+            src = _extract_task_id(body)
+            if src:
+                tid = (src.get("task_id") or src.get("taskId")
+                       or src.get("id") or src.get("conversionId")
+                       or src.get("conversion_id"))
                 if tid:
                     task_data["task_id"] = str(tid)
-                    task_data["conversion_id_1"] = str(src.get("conversion_id_1", ""))
-                    task_data["conversion_id_2"] = str(src.get("conversion_id_2", ""))
+                    task_data["conversion_id_1"] = str(
+                        src.get("conversion_id_1", src.get("conversionId1", ""))
+                    )
+                    task_data["conversion_id_2"] = str(
+                        src.get("conversion_id_2", src.get("conversionId2", ""))
+                    )
                     task_data["eta"] = src.get("eta")
                     task_data["response"] = body
                     logger.info(
@@ -918,15 +1084,27 @@ class LalalsDriver:
                         f"cid2={task_data['conversion_id_2']}, "
                         f"eta={task_data.get('eta')}"
                     )
-            except Exception:
-                pass
 
         self.page.on("request", on_request)
         self.page.on("response", on_response)
         self.click_generate()
 
-        # Brief wait to capture the initial response
-        self.page.wait_for_timeout(8000)
+        # Poll for task_id capture instead of fixed wait
+        from timeouts import TIMEOUTS
+        max_wait = TIMEOUTS.get("api_capture_s", 30)
+        poll_start = time.time()
+        while time.time() - poll_start < max_wait:
+            if task_data.get("task_id"):
+                logger.info(
+                    f"task_id captured after {time.time() - poll_start:.1f}s"
+                )
+                break
+            self.page.wait_for_timeout(500)
+        else:
+            self._capture_debug_screenshot("submit_no_task_id")
+            logger.warning(
+                f"task_id not captured within {max_wait}s"
+            )
 
         try:
             self.page.remove_listener("request", on_request)
@@ -985,15 +1163,125 @@ class LalalsDriver:
             pass
         self.page.wait_for_timeout(3000)
 
-    def download_from_home(self, song_title: str, download_dir: str) -> list[Path]:
+    def _find_card_on_home(self, song_title: str, prompt: str = "",
+                           lyrics: str = "") -> "Locator | None":
+        """Locate a ProjectItem card on the Home page.
+
+        Lalals.com renders each song as a ``div[data-name="ProjectItem"]``
+        containing the song title text.  We search through those cards
+        using multiple text-matching strategies.
+
+        Returns the matching ProjectItem locator, or None.
+        """
+        cards = self.page.locator('[data-name="ProjectItem"]')
+        count = cards.count()
+        logger.info(f"Found {count} ProjectItem cards on page")
+        if count == 0:
+            return None
+
+        # Build search needles in priority order
+        needles: list[tuple[str, str]] = []
+
+        # 1. Exact title
+        needles.append(("exact title", song_title.lower()))
+
+        # 2. Title prefix (first 15 chars)
+        if len(song_title) > 5:
+            needles.append(("title prefix", song_title[:15].strip().lower()))
+
+        # 3. Prompt prefix (first 20 chars)
+        if prompt:
+            needles.append(("prompt prefix", prompt[:20].strip().lower()))
+
+        # 4. First lyrics line (non-tag, first 25 chars)
+        if lyrics:
+            for line in lyrics.strip().split('\n'):
+                line = line.strip()
+                if line and not line.startswith('['):
+                    needles.append(("lyrics prefix", line[:25].strip().lower()))
+                    break
+
+        # 5. Title word overlap (any card with ≥50% of title words)
+        title_words = [w for w in song_title.lower().split() if len(w) > 2]
+
+        for i in range(count):
+            card = cards.nth(i)
+            try:
+                card_text = card.inner_text(timeout=1000).lower()
+            except Exception:
+                continue
+
+            # Try each needle against this card's text
+            for name, needle in needles:
+                if needle in card_text:
+                    project_id = card.get_attribute("data-project-id") or ""
+                    logger.info(
+                        f"Card #{i} matched via {name}: "
+                        f"{card_text.split(chr(10))[0][:60]!r} "
+                        f"(project_id={project_id})"
+                    )
+                    return card
+
+            # Word overlap fallback
+            if title_words:
+                matched = sum(1 for w in title_words if w in card_text)
+                if matched >= max(2, len(title_words) // 2):
+                    project_id = card.get_attribute("data-project-id") or ""
+                    logger.info(
+                        f"Card #{i} matched by word overlap "
+                        f"({matched}/{len(title_words)}): "
+                        f"{card_text.split(chr(10))[0][:60]!r} "
+                        f"(project_id={project_id})"
+                    )
+                    return card
+
+        logger.info(f"No card matched for '{song_title}'")
+        return None
+
+    def _click_card_menu(self, card) -> bool:
+        """Click the three-dot menu button on a ProjectItem card.
+
+        The menu is the last ``<button>`` inside the card div.
+        Returns True if the menu was successfully opened.
+        """
+        try:
+            # Hover over the card to reveal menu button
+            card.hover(timeout=2000)
+            self.page.wait_for_timeout(500)
+
+            buttons = card.locator('button')
+            btn_count = buttons.count()
+            if btn_count == 0:
+                logger.info("No buttons found in card")
+                return False
+
+            # The three-dot menu is the last button in the card
+            menu_btn = buttons.nth(btn_count - 1)
+            if menu_btn.is_visible(timeout=1000):
+                menu_btn.click()
+                self.page.wait_for_timeout(1000)
+                logger.info("Clicked three-dot menu (last button in card)")
+                return True
+
+            logger.info("Menu button not visible after hover")
+            return False
+        except Exception as e:
+            logger.info(f"Failed to click card menu: {e}")
+            return False
+
+    def download_from_home(self, song_title: str, download_dir: str,
+                           prompt: str = "", lyrics: str = "") -> list[Path]:
         """Download a song from the Home page via the three-dot menu.
 
-        Finds the generation card matching *song_title*, opens its
-        three-dot menu, and clicks Download -> Full Song.
+        Finds the generation card matching *song_title* (falling back to
+        prompt/lyrics text), opens its three-dot menu, and clicks
+        Download -> Full Song.
 
         Args:
             song_title: Song title to locate on the page.
             download_dir: Base download directory.
+            prompt: Optional prompt text for fallback matching.
+            lyrics: Optional lyrics text for fallback matching.
 
         Returns:
             List of saved file paths (may be empty on failure).
@@ -1002,38 +1290,25 @@ class LalalsDriver:
         dm = DownloadManager(download_dir)
 
         try:
-            # Find the card by title text
-            card = self.page.locator(f'text="{song_title}"').first
-            if not card.is_visible(timeout=3000):
-                short = song_title[:30].replace('"', '\\"')
-                card = self.page.locator(f'text=/{short}/i').first
-                if not card.is_visible(timeout=2000):
-                    logger.info(f"Card not found for '{song_title}'")
-                    return []
-
-            # Find three-dot / menu button near the card
-            menu_clicked = False
-            for sel in (
-                'xpath=ancestor::*[position() <= 5]//button[contains(@class, "menu") or contains(@class, "dot") or contains(@class, "more")]',
-                'xpath=ancestor::*[position() <= 5]//button[last()]',
-            ):
-                try:
-                    btn = card.locator(sel).first
-                    if btn.is_visible(timeout=1000):
-                        btn.click()
-                        self.page.wait_for_timeout(1000)
-                        menu_clicked = True
-                        break
-                except Exception:
-                    continue
-
-            if not menu_clicked:
-                logger.info("Three-dot menu not found")
+            card = self._find_card_on_home(song_title, prompt, lyrics)
+            if card is None:
+                self._capture_debug_screenshot("download_home_card_not_found")
+                logger.info(f"Card not found for '{song_title}'")
                 return []
 
-            # Click "Download"
+            # Also extract project_id for potential API fallback
+            project_id = card.get_attribute("data-project-id") or ""
+            if project_id:
+                logger.info(f"Card project_id: {project_id}")
+
+            if not self._click_card_menu(card):
+                self._capture_debug_screenshot("download_home_menu_fail")
+                return []
+
+            # Click "Download" in the popup menu
             dl = self.page.locator('text="Download"').first
             if not dl.is_visible(timeout=2000):
+                self._capture_debug_screenshot("download_home_no_download_option")
                 self.page.keyboard.press("Escape")
                 return []
             dl.click()
@@ -1056,33 +1331,16 @@ class LalalsDriver:
             # Try to grab version 2 — re-open menu and look for a second option
             self.page.wait_for_timeout(1500)
             try:
-                # Dismiss any open menus first
                 self.page.keyboard.press("Escape")
                 self.page.wait_for_timeout(500)
 
-                # Re-find the card and re-open three-dot menu
-                card2 = self.page.locator(f'text="{song_title}"').first
-                if card2.is_visible(timeout=2000):
-                    for sel in (
-                        'xpath=ancestor::*[position() <= 5]//button[contains(@class, "menu") or contains(@class, "dot") or contains(@class, "more")]',
-                        'xpath=ancestor::*[position() <= 5]//button[last()]',
-                    ):
-                        try:
-                            btn = card2.locator(sel).first
-                            if btn.is_visible(timeout=1000):
-                                btn.click()
-                                self.page.wait_for_timeout(1000)
-                                break
-                        except Exception:
-                            continue
-
-                    # Click "Download" again
+                card2 = self._find_card_on_home(song_title, prompt, lyrics)
+                if card2 is not None and self._click_card_menu(card2):
                     dl2 = self.page.locator('text="Download"').first
                     if dl2.is_visible(timeout=1500):
                         dl2.click()
                         self.page.wait_for_timeout(1000)
 
-                        # Look for "Full Song" items — there may be 2
                         full_songs = self.page.locator('text="Full Song"')
                         count = full_songs.count()
                         if count >= 2:

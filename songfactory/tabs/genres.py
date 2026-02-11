@@ -24,95 +24,91 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
+from tabs.base_tab import BaseTab
+from theme import Theme
+from event_bus import event_bus
+from validators import validate_genre
+
 
 # ---------------------------------------------------------------------------
-# Stylesheet constants
+# Stylesheet
 # ---------------------------------------------------------------------------
-
-_DARK_BG = "#2b2b2b"
-_PANEL_BG = "#353535"
-_TEXT_COLOR = "#e0e0e0"
-_ACCENT = "#E8A838"
-_ROW_ALT = "#2f2f2f"
-_ROW_BASE = "#353535"
-_SELECTION_BG = "#4a4a4a"
-_BORDER_COLOR = "#555555"
 
 _STYLESHEET = f"""
     QWidget {{
-        background-color: {_DARK_BG};
-        color: {_TEXT_COLOR};
+        background-color: {Theme.BG};
+        color: {Theme.TEXT};
         font-size: 13px;
     }}
     QTableWidget {{
-        background-color: {_PANEL_BG};
-        alternate-background-color: {_ROW_ALT};
-        gridline-color: {_BORDER_COLOR};
-        border: 1px solid {_BORDER_COLOR};
-        selection-background-color: {_SELECTION_BG};
-        selection-color: {_TEXT_COLOR};
+        background-color: {Theme.PANEL};
+        alternate-background-color: {Theme.ROW_ALT};
+        gridline-color: {Theme.BORDER};
+        border: 1px solid {Theme.BORDER};
+        selection-background-color: {Theme.SELECTION_BG};
+        selection-color: {Theme.TEXT};
     }}
     QTableWidget::item {{
         padding: 4px 8px;
     }}
     QHeaderView::section {{
-        background-color: {_PANEL_BG};
-        color: {_ACCENT};
+        background-color: {Theme.PANEL};
+        color: {Theme.ACCENT};
         font-weight: bold;
-        border: 1px solid {_BORDER_COLOR};
+        border: 1px solid {Theme.BORDER};
         padding: 6px 8px;
     }}
     QLineEdit, QTextEdit {{
-        background-color: {_PANEL_BG};
-        color: {_TEXT_COLOR};
-        border: 1px solid {_BORDER_COLOR};
+        background-color: {Theme.PANEL};
+        color: {Theme.TEXT};
+        border: 1px solid {Theme.BORDER};
         border-radius: 4px;
         padding: 6px;
     }}
     QLineEdit:focus, QTextEdit:focus {{
-        border: 1px solid {_ACCENT};
+        border: 1px solid {Theme.ACCENT};
     }}
     QLabel {{
-        color: {_ACCENT};
+        color: {Theme.ACCENT};
         font-weight: bold;
         background-color: transparent;
     }}
     QCheckBox {{
-        color: {_TEXT_COLOR};
+        color: {Theme.TEXT};
         spacing: 6px;
         background-color: transparent;
     }}
     QCheckBox::indicator {{
         width: 16px;
         height: 16px;
-        border: 1px solid {_BORDER_COLOR};
+        border: 1px solid {Theme.BORDER};
         border-radius: 3px;
-        background-color: {_PANEL_BG};
+        background-color: {Theme.PANEL};
     }}
     QCheckBox::indicator:checked {{
-        background-color: {_ACCENT};
-        border-color: {_ACCENT};
+        background-color: {Theme.ACCENT};
+        border-color: {Theme.ACCENT};
     }}
     QPushButton {{
-        background-color: {_PANEL_BG};
-        color: {_TEXT_COLOR};
-        border: 1px solid {_BORDER_COLOR};
+        background-color: {Theme.PANEL};
+        color: {Theme.TEXT};
+        border: 1px solid {Theme.BORDER};
         border-radius: 4px;
         padding: 8px 18px;
         font-weight: bold;
     }}
     QPushButton:hover {{
-        background-color: {_SELECTION_BG};
-        border-color: {_ACCENT};
+        background-color: {Theme.SELECTION_BG};
+        border-color: {Theme.ACCENT};
     }}
     QPushButton:pressed {{
-        background-color: {_ACCENT};
-        color: {_DARK_BG};
+        background-color: {Theme.ACCENT};
+        color: {Theme.BG};
     }}
     QPushButton#saveBtn {{
-        background-color: {_ACCENT};
-        color: {_DARK_BG};
-        border-color: {_ACCENT};
+        background-color: {Theme.ACCENT};
+        color: {Theme.BG};
+        border-color: {Theme.ACCENT};
     }}
     QPushButton#saveBtn:hover {{
         background-color: #f0b848;
@@ -123,16 +119,16 @@ _STYLESHEET = f"""
     }}
     QPushButton#deleteBtn:hover {{
         background-color: #c0392b;
-        color: {_TEXT_COLOR};
+        color: {Theme.TEXT};
     }}
     QSplitter::handle {{
-        background-color: {_BORDER_COLOR};
+        background-color: {Theme.BORDER};
         height: 2px;
     }}
 """
 
 
-class GenreManagerTab(QWidget):
+class GenreManagerTab(BaseTab):
     """Tab widget for managing genre definitions."""
 
     # Mapping of table column indices
@@ -142,19 +138,15 @@ class GenreManagerTab(QWidget):
     _COL_ACTIVE = 3
 
     def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
         self._current_genre_id: int | None = None
-
-        self._build_ui()
+        super().__init__(db, parent)
         self.setStyleSheet(_STYLESHEET)
-        self.load_genres()
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
-    def _build_ui(self):
+    def _init_ui(self):
         """Assemble the full layout: table on top, detail panel below."""
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
@@ -273,6 +265,8 @@ class GenreManagerTab(QWidget):
 
         outer.addWidget(splitter)
 
+        self.load_genres()
+
     # ------------------------------------------------------------------
     # Data loading
     # ------------------------------------------------------------------
@@ -325,6 +319,10 @@ class GenreManagerTab(QWidget):
         if self._current_genre_id is not None:
             self._select_row_by_genre_id(self._current_genre_id)
 
+    def refresh(self):
+        """BaseTab hook: reload genre data."""
+        self.load_genres()
+
     # ------------------------------------------------------------------
     # Selection
     # ------------------------------------------------------------------
@@ -365,19 +363,12 @@ class GenreManagerTab(QWidget):
             return
 
         name = self.name_edit.text().strip()
-        if not name:
-            QMessageBox.warning(
-                self, "Validation Error", "Genre name cannot be empty."
-            )
-            return
-
         prompt_template = self.template_edit.toPlainText().strip()
-        if not prompt_template:
-            QMessageBox.warning(
-                self,
-                "Validation Error",
-                "Prompt template cannot be empty.",
-            )
+
+        errors = validate_genre(name, prompt_template)
+        if errors:
+            msg = "\n".join(f"- {e.field}: {e.message}" for e in errors)
+            QMessageBox.warning(self, "Validation Error", msg)
             return
 
         self.db.update_genre(
@@ -389,6 +380,7 @@ class GenreManagerTab(QWidget):
             active=int(self.active_check.isChecked()),
         )
         self.load_genres()
+        event_bus.genres_changed.emit()
 
     def add_genre(self):
         """Create a new genre with default values, select it, and focus the
@@ -402,6 +394,7 @@ class GenreManagerTab(QWidget):
         )
         self._current_genre_id = new_id
         self.load_genres()
+        event_bus.genres_changed.emit()
         self._select_row_by_genre_id(new_id)
         self.name_edit.setFocus()
         self.name_edit.selectAll()
@@ -431,10 +424,12 @@ class GenreManagerTab(QWidget):
         self._current_genre_id = None
         self._clear_detail_panel()
         self.load_genres()
+        event_bus.genres_changed.emit()
 
     def toggle_active(self, genre_id: int, state: int):
         """Toggle the active flag for a genre directly from the table checkbox."""
         self.db.toggle_genre_active(genre_id)
+        event_bus.genres_changed.emit()
 
         # If the toggled genre is currently shown in the detail panel,
         # refresh its active checkbox to stay in sync.

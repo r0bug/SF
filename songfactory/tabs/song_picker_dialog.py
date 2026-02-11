@@ -13,10 +13,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer
 
-_BG = "#2b2b2b"
-_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
+from theme import Theme
 
 
 class SongPickerDialog(QDialog):
@@ -48,7 +45,7 @@ class SongPickerDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
 
         header = QLabel("Select songs to add (only songs with audio files are shown)")
-        header.setStyleSheet(f"color: {_ACCENT}; font-weight: bold; font-size: 13px;")
+        header.setStyleSheet(f"color: {Theme.ACCENT}; font-weight: bold; font-size: 13px;")
         layout.addWidget(header)
 
         # Search bar
@@ -75,7 +72,7 @@ class SongPickerDialog(QDialog):
 
         # Count label
         self.count_label = QLabel("0 songs selected")
-        self.count_label.setStyleSheet(f"color: {_TEXT}; font-size: 12px;")
+        self.count_label.setStyleSheet(f"color: {Theme.TEXT}; font-size: 12px;")
         self.table.itemSelectionChanged.connect(self._update_count)
         layout.addWidget(self.count_label)
 
@@ -96,33 +93,33 @@ class SongPickerDialog(QDialog):
 
     def _apply_styles(self):
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {_BG}; }}
-            QLabel {{ color: {_TEXT}; }}
+            QDialog {{ background-color: {Theme.BG}; }}
+            QLabel {{ color: {Theme.TEXT}; }}
             QLineEdit {{
-                background-color: {_PANEL}; color: {_TEXT};
+                background-color: {Theme.PANEL}; color: {Theme.TEXT};
                 border: 1px solid #555555; border-radius: 4px; padding: 6px;
             }}
-            QLineEdit:focus {{ border: 1px solid {_ACCENT}; }}
+            QLineEdit:focus {{ border: 1px solid {Theme.ACCENT}; }}
             QTableWidget {{
-                background-color: {_BG}; alternate-background-color: #323232;
-                color: {_TEXT}; border: 1px solid #555555; gridline-color: transparent;
+                background-color: {Theme.BG}; alternate-background-color: #323232;
+                color: {Theme.TEXT}; border: 1px solid #555555; gridline-color: transparent;
             }}
             QTableWidget::item:selected {{
-                background-color: {_ACCENT}; color: #000000;
+                background-color: {Theme.ACCENT}; color: #000000;
             }}
             QHeaderView::section {{
-                background-color: {_PANEL}; color: {_TEXT};
-                border: none; border-bottom: 2px solid {_ACCENT};
+                background-color: {Theme.PANEL}; color: {Theme.TEXT};
+                border: none; border-bottom: 2px solid {Theme.ACCENT};
                 padding: 6px; font-weight: bold;
             }}
             QPushButton {{
-                background-color: {_PANEL}; color: {_TEXT};
+                background-color: {Theme.PANEL}; color: {Theme.TEXT};
                 border: 1px solid #555555; border-radius: 4px;
                 padding: 8px 16px; font-weight: bold;
             }}
-            QPushButton:hover {{ border-color: {_ACCENT}; }}
+            QPushButton:hover {{ border-color: {Theme.ACCENT}; }}
             QPushButton#addBtn {{
-                background-color: {_ACCENT}; color: #000000; border: none;
+                background-color: {Theme.ACCENT}; color: #000000; border: none;
             }}
             QPushButton#addBtn:hover {{ background-color: #F0B848; }}
         """)

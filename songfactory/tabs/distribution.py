@@ -34,42 +34,23 @@ except ImportError:
     _HAS_COVER_ART = False
 
 from automation.distrokid_driver import GENRE_MAP, map_genre
-
-# ---------------------------------------------------------------------------
-# Color constants
-# ---------------------------------------------------------------------------
-
-_BG = "#2b2b2b"
-_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
-
-_DIST_STATUS_COLORS = {
-    "draft":     "#888888",
-    "ready":     "#2196F3",
-    "uploading": "#FFC107",
-    "submitted": "#9C27B0",
-    "live":      "#4CAF50",
-    "error":     "#F44336",
-}
+from tabs.base_tab import BaseTab
+from theme import Theme
 
 
-class DistributionTab(QWidget):
+class DistributionTab(BaseTab):
     """Distribution management tab for uploading songs to DistroKid."""
 
     def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
         self._worker = None
         self._current_dist_id = None
-        self._build_ui()
-        self.load_distributions()
+        super().__init__(db, parent)
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
-    def _build_ui(self):
+    def _init_ui(self):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(0)
@@ -83,7 +64,7 @@ class DistributionTab(QWidget):
 
         queue_label = QLabel("Distribution Queue")
         queue_label.setStyleSheet(
-            f"color: {_ACCENT}; font-weight: bold; font-size: 14px;"
+            f"color: {Theme.ACCENT}; font-weight: bold; font-size: 14px;"
         )
         left_layout.addWidget(queue_label)
 
@@ -123,7 +104,7 @@ class DistributionTab(QWidget):
 
         form_label = QLabel("Release Details")
         form_label.setStyleSheet(
-            f"color: {_ACCENT}; font-weight: bold; font-size: 14px;"
+            f"color: {Theme.ACCENT}; font-weight: bold; font-size: 14px;"
         )
         form_layout.addWidget(form_label)
 
@@ -185,7 +166,7 @@ class DistributionTab(QWidget):
         self.art_preview.setFixedSize(150, 150)
         self.art_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.art_preview.setStyleSheet(
-            f"background-color: {_PANEL}; border: 1px solid #555555; border-radius: 4px;"
+            f"background-color: {Theme.PANEL}; border: 1px solid #555555; border-radius: 4px;"
         )
         self.art_preview.setText("No art")
         form.addRow("", self.art_preview)
@@ -231,7 +212,7 @@ class DistributionTab(QWidget):
         form_btn_row = QHBoxLayout()
         self.save_btn = QPushButton("Save Draft")
         self.save_btn.setStyleSheet(
-            f"background-color: {_ACCENT}; color: #1a1a1a; font-weight: bold; "
+            f"background-color: {Theme.ACCENT}; color: #1a1a1a; font-weight: bold; "
             "border: none; border-radius: 6px; padding: 10px 24px;"
         )
         self.save_btn.clicked.connect(self._save_draft)
@@ -260,7 +241,7 @@ class DistributionTab(QWidget):
 
         status_label = QLabel("Upload Status")
         status_label.setStyleSheet(
-            f"color: {_ACCENT}; font-weight: bold; font-size: 14px;"
+            f"color: {Theme.ACCENT}; font-weight: bold; font-size: 14px;"
         )
         right_layout.addWidget(status_label)
 
@@ -292,7 +273,7 @@ class DistributionTab(QWidget):
 
         self.upload_btn = QPushButton("Upload Now")
         self.upload_btn.setStyleSheet(
-            f"background-color: {_ACCENT}; color: #1a1a1a; font-weight: bold; "
+            f"background-color: {Theme.ACCENT}; color: #1a1a1a; font-weight: bold; "
             "border: none; border-radius: 6px; padding: 10px 24px;"
         )
         self.upload_btn.clicked.connect(self._start_upload)
@@ -326,6 +307,18 @@ class DistributionTab(QWidget):
             self.genre_combo.addItem(f"{name} -> {dk}", name)
 
     # ------------------------------------------------------------------
+    # Signals & Refresh
+    # ------------------------------------------------------------------
+
+    def _connect_signals(self) -> None:
+        """Initial data load after UI and signals are ready."""
+        self.load_distributions()
+
+    def refresh(self) -> None:
+        """Reload distribution data (called by app.py on tab activation)."""
+        self.load_distributions()
+
+    # ------------------------------------------------------------------
     # Data loading
     # ------------------------------------------------------------------
 
@@ -345,7 +338,7 @@ class DistributionTab(QWidget):
             song = self.db.get_song(d["song_id"])
             song_title = song["title"] if song else f"Song #{d['song_id']}"
             status = d.get("status", "draft")
-            color = _DIST_STATUS_COLORS.get(status, "#888888")
+            color = Theme.DIST_STATUS_COLORS.get(status, "#888888")
 
             item = QListWidgetItem(f"[{status}] {song_title}")
             item.setData(Qt.ItemDataRole.UserRole, d["id"])
@@ -740,6 +733,7 @@ class DistributionTab(QWidget):
             config=config,
             dist_ids=dist_ids,
         )
+        self.register_worker(self._worker)
         self._worker.upload_started.connect(self._on_upload_started)
         self._worker.upload_completed.connect(self._on_upload_completed)
         self._worker.upload_error.connect(self._on_upload_error)

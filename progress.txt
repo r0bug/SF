@@ -1,0 +1,19 @@
+# Progress Tracker
+Created: 2026-02-09
+
+## Status: In Progress
+
+## Learnings
+- Database at ~/.songfactory/songfactory.db, private attr _db_path
+- PyQt6 at /usr/lib/python3/dist-packages (system install)
+- Use QT_QPA_PLATFORM=offscreen for headless testing
+- Ubuntu pip needs --break-system-packages flag
+- database.py has 1040 LOC, 8 tables, 35+ methods, uses _cursor() context manager
+- app.py has DARK_STYLESHEET (223 lines) inline, 8 tabs registered
+- No existing tests, no schema versioning, no indexes beyond PKs
+- cd_tracks.project_id is only FK with ON DELETE CASCADE
+- songs.genre_id and distributions.song_id lack proper FK behavior
+- Seed data has 23 genres, 16 lore, 29 songs (2 songs reference missing genres)
+- Theme colors: BG=#2b2b2b, PANEL=#353535, TEXT=#e0e0e0, ACCENT=#E8A838
+- All tabs inherit from QWidget directly (no base class)
+- All workers use _stop_flag pattern, create own DB connections in run()

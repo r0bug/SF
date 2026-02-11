@@ -19,10 +19,7 @@ try:
 except ImportError:
     _HAS_IMPORTER = False
 
-_BG = "#2b2b2b"
-_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
+from theme import Theme
 
 
 class HistoryImportDialog(QDialog):
@@ -48,7 +45,7 @@ class HistoryImportDialog(QDialog):
 
         # Header
         header = QLabel("Discover and import songs from your lalals.com history")
-        header.setStyleSheet(f"color: {_ACCENT}; font-size: 14px; font-weight: bold;")
+        header.setStyleSheet(f"color: {Theme.ACCENT}; font-size: 14px; font-weight: bold;")
         layout.addWidget(header)
 
         # Info label
@@ -61,7 +58,7 @@ class HistoryImportDialog(QDialog):
         # Source selector
         source_row = QHBoxLayout()
         source_label = QLabel("Discovery Source:")
-        source_label.setStyleSheet(f"color: {_TEXT}; font-weight: bold;")
+        source_label.setStyleSheet(f"color: {Theme.TEXT}; font-weight: bold;")
         source_row.addWidget(source_label)
 
         self.source_combo = QComboBox()
@@ -75,7 +72,7 @@ class HistoryImportDialog(QDialog):
         # Track type checkboxes
         track_row = QHBoxLayout()
         track_label = QLabel("Download:")
-        track_label.setStyleSheet(f"color: {_TEXT}; font-weight: bold;")
+        track_label.setStyleSheet(f"color: {Theme.TEXT}; font-weight: bold;")
         track_row.addWidget(track_label)
 
         self.cb_full_song = QCheckBox("Full Song")
@@ -165,34 +162,34 @@ class HistoryImportDialog(QDialog):
     def _apply_styles(self):
         self.setStyleSheet(f"""
             QDialog {{
-                background-color: {_BG};
-                color: {_TEXT};
+                background-color: {Theme.BG};
+                color: {Theme.TEXT};
             }}
             QLabel {{
-                color: {_TEXT};
+                color: {Theme.TEXT};
             }}
             QTableWidget {{
-                background-color: {_BG};
-                alternate-background-color: {_PANEL};
-                color: {_TEXT};
+                background-color: {Theme.BG};
+                alternate-background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
                 border: 1px solid #555555;
                 border-radius: 4px;
             }}
             QTableWidget::item:selected {{
-                background-color: {_ACCENT};
+                background-color: {Theme.ACCENT};
                 color: #000000;
             }}
             QHeaderView::section {{
-                background-color: {_PANEL};
-                color: {_TEXT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
                 border: none;
-                border-bottom: 2px solid {_ACCENT};
+                border-bottom: 2px solid {Theme.ACCENT};
                 padding: 6px;
                 font-weight: bold;
             }}
             QPushButton {{
-                background-color: {_PANEL};
-                color: {_TEXT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 padding: 6px 16px;
@@ -200,45 +197,45 @@ class HistoryImportDialog(QDialog):
             }}
             QPushButton:hover {{
                 background-color: #444444;
-                border-color: {_ACCENT};
+                border-color: {Theme.ACCENT};
             }}
             QPushButton:disabled {{
                 background-color: #3a3a3a;
                 color: #666666;
             }}
             QComboBox {{
-                background-color: {_PANEL};
-                color: {_TEXT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 padding: 5px 10px;
                 font-size: 13px;
             }}
             QComboBox:focus {{
-                border-color: {_ACCENT};
+                border-color: {Theme.ACCENT};
             }}
             QComboBox::drop-down {{
                 border: none;
             }}
             QComboBox QAbstractItemView {{
-                background-color: {_PANEL};
-                color: {_TEXT};
-                selection-background-color: {_ACCENT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
+                selection-background-color: {Theme.ACCENT};
                 selection-color: #000000;
             }}
             QCheckBox {{
-                color: {_TEXT};
+                color: {Theme.TEXT};
                 spacing: 6px;
             }}
             QProgressBar {{
-                background-color: {_BG};
+                background-color: {Theme.BG};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 text-align: center;
-                color: {_TEXT};
+                color: {Theme.TEXT};
             }}
             QProgressBar::chunk {{
-                background-color: {_ACCENT};
+                background-color: {Theme.ACCENT};
                 border-radius: 3px;
             }}
         """)

@@ -16,7 +16,6 @@ from pathlib import Path
 
 LOG_DIR = Path.home() / ".songfactory"
 LOG_FILE = LOG_DIR / "network_sniffer.log"
-PROFILE_DIR = LOG_DIR / "browser_profile"
 
 logger = logging.getLogger("songfactory.sniffer")
 
@@ -26,7 +25,11 @@ class NetworkSniffer:
 
     def __init__(self, log_path: str = None, profile_dir: str = None):
         self.log_path = Path(log_path) if log_path else LOG_FILE
-        self.profile_dir = str(profile_dir) if profile_dir else str(PROFILE_DIR)
+        if profile_dir:
+            self.profile_dir = str(profile_dir)
+        else:
+            from automation.browser_profiles import get_profile_path
+            self.profile_dir = get_profile_path("lalals")
         self._log_file = None
         self._page = None
         self._context = None

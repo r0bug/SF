@@ -26,41 +26,38 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer
 import os
 
+from tabs.base_tab import BaseTab
+from theme import Theme
+from secure_config import get_secret, set_secret, SENSITIVE_KEYS
+from ai_models import get_model_choices, DEFAULT_MODEL
 
-# ---------------------------------------------------------------------------
-# Colour constants (dark theme)
-# ---------------------------------------------------------------------------
-_BG = "#2b2b2b"
-_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
 
 _STYLESHEET = f"""
     QWidget {{
-        background-color: {_BG};
-        color: {_TEXT};
+        background-color: {Theme.BG};
+        color: {Theme.TEXT};
     }}
 
     QGroupBox {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         border: 1px solid #555555;
         border-radius: 6px;
         margin-top: 14px;
         padding: 16px 12px 12px 12px;
         font-weight: bold;
         font-size: 13px;
-        color: {_ACCENT};
+        color: {Theme.ACCENT};
     }}
     QGroupBox::title {{
         subcontrol-origin: margin;
         subcontrol-position: top left;
         padding: 2px 10px;
-        color: {_ACCENT};
+        color: {Theme.ACCENT};
     }}
 
     QLineEdit, QComboBox, QSpinBox {{
-        background-color: {_BG};
-        color: {_TEXT};
+        background-color: {Theme.BG};
+        color: {Theme.TEXT};
         border: 1px solid #555555;
         border-radius: 4px;
         padding: 6px 8px;
@@ -68,27 +65,27 @@ _STYLESHEET = f"""
         min-height: 24px;
     }}
     QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{
-        border-color: {_ACCENT};
+        border-color: {Theme.ACCENT};
     }}
 
     QComboBox::drop-down {{
         border: none;
     }}
     QComboBox QAbstractItemView {{
-        background-color: {_PANEL};
-        color: {_TEXT};
-        selection-background-color: {_ACCENT};
+        background-color: {Theme.PANEL};
+        color: {Theme.TEXT};
+        selection-background-color: {Theme.ACCENT};
         selection-color: #1e1e1e;
     }}
 
     QLabel {{
-        color: {_TEXT};
+        color: {Theme.TEXT};
         font-size: 13px;
     }}
 
     QPushButton {{
         background-color: #444444;
-        color: {_TEXT};
+        color: {Theme.TEXT};
         border: 1px solid #666666;
         border-radius: 4px;
         padding: 6px 16px;
@@ -102,7 +99,7 @@ _STYLESHEET = f"""
     }}
 
     QPushButton#saveButton {{
-        background-color: {_ACCENT};
+        background-color: {Theme.ACCENT};
         color: #1a1a1a;
         border: none;
         border-radius: 6px;
@@ -122,22 +119,23 @@ _STYLESHEET = f"""
 _DEFAULT_DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Music", "SongFactory")
 
 
-class SettingsTab(QWidget):
+class SettingsTab(BaseTab):
     """Application settings panel with grouped form fields."""
 
     def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self.setStyleSheet(_STYLESHEET)
-        self._build_ui()
-        self.load_settings()
+        # Instance variables needed before _init_ui runs
+        self._sniffer_thread = None
+        self._diag_thread = None
+        self._diag_report = None
+        super().__init__(db, parent)
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
-    def _build_ui(self):
+    def _init_ui(self):
         """Assemble the full settings layout inside a scroll area."""
+        self.setStyleSheet(_STYLESHEET)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -178,10 +176,8 @@ class SettingsTab(QWidget):
 
         # Default AI Model
         self.model_combo = QComboBox()
-        self.model_combo.addItems([
-            "claude-sonnet-4-20250514",
-            "claude-opus-4-0-20250115",
-        ])
+        for model_id, label in get_model_choices():
+            self.model_combo.addItem(label, model_id)
         api_form.addRow("Default AI Model:", self.model_combo)
 
         api_group.setLayout(api_form)
@@ -378,8 +374,75 @@ class SettingsTab(QWidget):
         self.open_auto_log_btn.clicked.connect(self._open_auto_log)
         diag_layout.addWidget(self.open_auto_log_btn)
 
+        self.open_screenshots_btn = QPushButton("Open Screenshots Folder")
+        self.open_screenshots_btn.setToolTip(
+            "Opens the folder containing debug screenshots\n"
+            "captured when browser automation encounters errors."
+        )
+        self.open_screenshots_btn.clicked.connect(self._open_screenshots_folder)
+        diag_layout.addWidget(self.open_screenshots_btn)
+
         diag_layout.addStretch()
-        self.diag_group.setLayout(diag_layout)
+
+        # Pipeline diagnostic sub-section
+        diag_pipeline_layout = QVBoxLayout()
+
+        diag_top_row = QHBoxLayout()
+        self.run_diag_btn = QPushButton("Run Pipeline Diagnostic")
+        self.run_diag_btn.setStyleSheet(
+            f"QPushButton {{ background-color: {Theme.ACCENT}; color: #1a1a1a; "
+            f"border: none; border-radius: 4px; padding: 6px 16px; font-weight: bold; }}"
+            f"QPushButton:hover {{ background-color: #f0b848; }}"
+        )
+        self.run_diag_btn.setToolTip(
+            "Tests each phase of the lalals.com pipeline independently:\n"
+            "Browser launch, form selectors, fill test, download URLs."
+        )
+        self.run_diag_btn.clicked.connect(self._run_pipeline_diagnostic)
+        diag_top_row.addWidget(self.run_diag_btn)
+
+        self.diag_api_checkbox = QCheckBox("Test API submission (uses 1 credit)")
+        self.diag_api_checkbox.setChecked(False)
+        self.diag_api_checkbox.setToolTip(
+            "If checked, Phase D will submit a real test song.\n"
+            "This consumes 1 lalals.com credit."
+        )
+        diag_top_row.addWidget(self.diag_api_checkbox)
+
+        self.view_diag_report_btn = QPushButton("View Full Report")
+        self.view_diag_report_btn.setEnabled(False)
+        self.view_diag_report_btn.clicked.connect(self._view_diag_report)
+        diag_top_row.addWidget(self.view_diag_report_btn)
+
+        diag_top_row.addStretch()
+        diag_pipeline_layout.addLayout(diag_top_row)
+
+        # Phase status rows
+        from widgets.status_badge import StatusBadge
+        self._diag_badges = {}
+        diag_phases_row = QHBoxLayout()
+        for phase_id, phase_name in [
+            ("A", "Browser"), ("B", "Selectors"),
+            ("C", "Fill Test"), ("D", "API Submit"), ("E", "Downloads"),
+        ]:
+            label = QLabel(f"{phase_id}: {phase_name}")
+            label.setStyleSheet("font-size: 12px;")
+            badge = StatusBadge("pending", color_map={
+                "pass": "#4CAF50", "fail": "#f44336",
+                "warn": "#FF9800", "skip": "#888888",
+                "pending": "#555555", "running": "#2196F3",
+            })
+            self._diag_badges[phase_id] = badge
+            diag_phases_row.addWidget(label)
+            diag_phases_row.addWidget(badge)
+            diag_phases_row.addSpacing(8)
+        diag_phases_row.addStretch()
+        diag_pipeline_layout.addLayout(diag_phases_row)
+
+        diag_full_layout = QVBoxLayout()
+        diag_full_layout.addLayout(diag_layout)
+        diag_full_layout.addLayout(diag_pipeline_layout)
+        self.diag_group.setLayout(diag_full_layout)
         root.addWidget(self.diag_group)
 
         # ---- Backup & Restore group ----
@@ -435,6 +498,17 @@ class SettingsTab(QWidget):
         scroll.setWidget(scroll_content)
         outer.addWidget(scroll)
 
+        # Initial data load
+        self.load_settings()
+
+    # ------------------------------------------------------------------
+    # Refresh (BaseTab hook)
+    # ------------------------------------------------------------------
+
+    def refresh(self):
+        """Reload settings from the database."""
+        self.load_settings()
+
     # ------------------------------------------------------------------
     # Load / Save
     # ------------------------------------------------------------------
@@ -442,16 +516,15 @@ class SettingsTab(QWidget):
     def load_settings(self):
         """Populate all fields from the database config table."""
         self.api_key_edit.setText(
-            self.db.get_config("api_key", "")
+            get_secret("api_key", fallback_db=self.db) or ""
         )
 
-        # AI model
-        model = self.db.get_config("ai_model", "claude-sonnet-4-20250514")
-        idx = self.model_combo.findText(model)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
-        else:
-            self.model_combo.setCurrentIndex(0)
+        # AI model - use stored model ID
+        model = self.db.get_config("ai_model", "")
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemData(i) == model:
+                self.model_combo.setCurrentIndex(i)
+                break
 
         # Lalals.com
         self.lalals_username_edit.setText(
@@ -461,7 +534,7 @@ class SettingsTab(QWidget):
             self.db.get_config("lalals_email", "")
         )
         self.lalals_password_edit.setText(
-            self.db.get_config("lalals_password", "")
+            get_secret("lalals_password", fallback_db=self.db) or ""
         )
         self.browser_path_edit.setText(
             self.db.get_config("browser_path", "")
@@ -485,7 +558,7 @@ class SettingsTab(QWidget):
 
         # Song Submission
         self.musicgpt_key_edit.setText(
-            self.db.get_config("musicgpt_api_key", "")
+            get_secret("musicgpt_api_key", fallback_db=self.db) or ""
         )
         mode = self.db.get_config("submission_mode", "browser")
         idx = self.submission_mode_combo.findData(mode)
@@ -497,7 +570,7 @@ class SettingsTab(QWidget):
             self.db.get_config("dk_email", "")
         )
         self.dk_password_edit.setText(
-            self.db.get_config("dk_password", "")
+            get_secret("dk_password", fallback_db=self.db) or ""
         )
         self.dk_artist_edit.setText(
             self.db.get_config("dk_artist", "Yakima Finds")
@@ -508,11 +581,11 @@ class SettingsTab(QWidget):
 
     def save_settings(self):
         """Persist all field values to the database config table."""
-        self.db.set_config("api_key", self.api_key_edit.text().strip())
-        self.db.set_config("ai_model", self.model_combo.currentText())
+        set_secret("api_key", self.api_key_edit.text().strip(), fallback_db=self.db)
+        self.db.set_config("ai_model", self.model_combo.currentData() or self.model_combo.currentText())
         self.db.set_config("lalals_username", self.lalals_username_edit.text().strip())
         self.db.set_config("lalals_email", self.lalals_email_edit.text().strip())
-        self.db.set_config("lalals_password", self.lalals_password_edit.text())
+        set_secret("lalals_password", self.lalals_password_edit.text(), fallback_db=self.db)
         self.db.set_config("browser_path", self.browser_path_edit.text().strip())
 
         download_dir = self.download_dir_edit.text().strip()
@@ -531,8 +604,8 @@ class SettingsTab(QWidget):
         )
 
         # Song Submission
-        self.db.set_config(
-            "musicgpt_api_key", self.musicgpt_key_edit.text().strip()
+        set_secret(
+            "musicgpt_api_key", self.musicgpt_key_edit.text().strip(), fallback_db=self.db
         )
         self.db.set_config(
             "submission_mode", self.submission_mode_combo.currentData()
@@ -540,7 +613,7 @@ class SettingsTab(QWidget):
 
         # DistroKid
         self.db.set_config("dk_email", self.dk_email_edit.text().strip())
-        self.db.set_config("dk_password", self.dk_password_edit.text())
+        set_secret("dk_password", self.dk_password_edit.text(), fallback_db=self.db)
         self.db.set_config(
             "dk_artist", self.dk_artist_edit.text().strip() or "Yakima Finds"
         )
@@ -618,7 +691,7 @@ class SettingsTab(QWidget):
         try:
             from api_client import SongGenerator
 
-            model = self.model_combo.currentText()
+            model = self.model_combo.currentData() or self.model_combo.currentText()
             generator = SongGenerator(api_key=api_key, model=model)
             success = generator.test_connection()
 
@@ -788,6 +861,7 @@ class SettingsTab(QWidget):
                     pass  # Logged inside sniffer
 
         self._sniffer_thread = SnifferThread()
+        self.register_worker(self._sniffer_thread)
         self._sniffer_thread.finished.connect(self._on_sniffer_done)
         self._sniffer_thread.start()
 
@@ -829,6 +903,88 @@ class SettingsTab(QWidget):
                 "Automation log not found.\n\n"
                 f"Expected at: {log_path}",
             )
+
+    def _open_screenshots_folder(self):
+        """Open the debug screenshots folder in the file manager."""
+        screenshots_dir = os.path.expanduser("~/.songfactory/screenshots")
+        os.makedirs(screenshots_dir, exist_ok=True)
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(screenshots_dir))
+
+    # ------------------------------------------------------------------
+    # Pipeline Diagnostics
+    # ------------------------------------------------------------------
+
+    def _run_pipeline_diagnostic(self):
+        """Launch the pipeline diagnostic worker."""
+        self.run_diag_btn.setEnabled(False)
+        self.run_diag_btn.setText("Running diagnostics...")
+        self.view_diag_report_btn.setEnabled(False)
+        self._diag_report = None
+
+        # Reset badges
+        for badge in self._diag_badges.values():
+            badge.set_status("pending")
+
+        from automation.pipeline_diagnostics import PipelineDiagnosticWorker
+
+        self._diag_thread = PipelineDiagnosticWorker(
+            db_path=str(self.db._db_path),
+            test_api=self.diag_api_checkbox.isChecked(),
+        )
+        self.register_worker(self._diag_thread)
+        self._diag_thread.phase_started.connect(self._on_diag_phase_started)
+        self._diag_thread.phase_completed.connect(self._on_diag_phase_completed)
+        self._diag_thread.diagnostic_finished.connect(self._on_diag_finished)
+        self._diag_thread.start()
+
+    def _on_diag_phase_started(self, phase_id: str, phase_name: str):
+        """Update badge when a phase starts."""
+        if phase_id in self._diag_badges:
+            self._diag_badges[phase_id].set_status("running")
+
+    def _on_diag_phase_completed(self, result):
+        """Update badge when a phase completes."""
+        if result.phase in self._diag_badges:
+            self._diag_badges[result.phase].set_status(result.status)
+
+    def _on_diag_finished(self, report):
+        """Handle diagnostic completion."""
+        self._diag_report = report
+        self.run_diag_btn.setEnabled(True)
+        self.run_diag_btn.setText("Run Pipeline Diagnostic")
+        self.view_diag_report_btn.setEnabled(True)
+        overall = report.overall_status.upper()
+        self.status_label.setText(f"Diagnostic complete: {overall}")
+        color = {"PASS": "#4CAF50", "FAIL": "#f44336", "WARN": "#FF9800"}.get(
+            overall, "#888888"
+        )
+        self.status_label.setStyleSheet(f"color: {color}; font-size: 13px;")
+        QTimer.singleShot(10000, lambda: self.status_label.setText(""))
+
+    def _view_diag_report(self):
+        """Show the full diagnostic report in a dialog."""
+        if not self._diag_report:
+            QMessageBox.information(
+                self, "No Report", "Run the pipeline diagnostic first."
+            )
+            return
+
+        from PyQt6.QtWidgets import QDialog, QTextBrowser
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Pipeline Diagnostic Report")
+        dlg.resize(800, 500)
+        layout = QVBoxLayout(dlg)
+        browser = QTextBrowser()
+        browser.setHtml(self._diag_report.to_html())
+        browser.setStyleSheet(
+            f"background-color: {Theme.BG}; color: {Theme.TEXT}; "
+            f"font-family: monospace; font-size: 13px;"
+        )
+        layout.addWidget(browser)
+        dlg.exec()
 
     # ------------------------------------------------------------------
     # Backup & Restore

@@ -24,13 +24,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QPixmap, QColor
 
-# Color constants matching app theme
-_BG = "#2b2b2b"
-_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
-_GREEN = "#4CAF50"
-_RED = "#F44336"
+from tabs.base_tab import BaseTab
+from theme import Theme
 
 CD_MAX_SECONDS = 80 * 60       # 80 minutes Red Book
 CD_WARN_SECONDS = 74 * 60      # 74 minutes warning threshold
@@ -38,20 +33,15 @@ CD_WARN_SECONDS = 74 * 60      # 74 minutes warning threshold
 CD_PROJECTS_DIR = Path.home() / ".songfactory" / "cd_projects"
 
 
-class CDMasterTab(QWidget):
+class CDMasterTab(BaseTab):
     """Main CD mastering tab with project list, track editor, and art preview."""
 
     def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
         self._current_project = None
         self._current_tracks = []
         self._convert_worker = None
         self._burn_worker = None
-
-        self._init_ui()
-        self._apply_styles()
-        self.refresh_projects()
+        super().__init__(db, parent)
 
     # ==================================================================
     # UI Construction
@@ -70,7 +60,7 @@ class CDMasterTab(QWidget):
         left_layout.setSpacing(6)
 
         left_header = QLabel("CD Projects")
-        left_header.setStyleSheet(f"color: {_ACCENT}; font-weight: bold; font-size: 14px;")
+        left_header.setStyleSheet(f"color: {Theme.ACCENT}; font-weight: bold; font-size: 14px;")
         left_layout.addWidget(left_header)
 
         self.project_list = QListWidget()
@@ -130,7 +120,7 @@ class CDMasterTab(QWidget):
 
         # Track table
         track_header = QLabel("Tracks")
-        track_header.setStyleSheet(f"color: {_ACCENT}; font-weight: bold; font-size: 13px;")
+        track_header.setStyleSheet(f"color: {Theme.ACCENT}; font-weight: bold; font-size: 13px;")
         center_layout.addWidget(track_header)
 
         self.track_table = QTableWidget()
@@ -183,7 +173,7 @@ class CDMasterTab(QWidget):
         track_ctrl.addStretch()
 
         self.duration_label = QLabel("0:00 / 80:00")
-        self.duration_label.setStyleSheet(f"color: {_GREEN}; font-weight: bold; font-size: 13px;")
+        self.duration_label.setStyleSheet(f"color: {Theme.SUCCESS}; font-weight: bold; font-size: 13px;")
         track_ctrl.addWidget(self.duration_label)
 
         center_layout.addLayout(track_ctrl)
@@ -271,7 +261,7 @@ class CDMasterTab(QWidget):
         center_layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("Ready")
-        self.status_label.setStyleSheet(f"color: {_TEXT}; font-size: 12px;")
+        self.status_label.setStyleSheet(f"color: {Theme.TEXT}; font-size: 12px;")
         center_layout.addWidget(self.status_label)
 
         splitter.addWidget(center)
@@ -283,7 +273,7 @@ class CDMasterTab(QWidget):
         right_layout.setSpacing(8)
 
         art_header = QLabel("Artwork")
-        art_header.setStyleSheet(f"color: {_ACCENT}; font-weight: bold; font-size: 14px;")
+        art_header.setStyleSheet(f"color: {Theme.ACCENT}; font-weight: bold; font-size: 14px;")
         right_layout.addWidget(art_header)
 
         # Disc art
@@ -295,7 +285,7 @@ class CDMasterTab(QWidget):
         self.disc_art_preview.setFixedSize(200, 200)
         self.disc_art_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.disc_art_preview.setStyleSheet(
-            f"background-color: {_PANEL}; border: 1px solid #555555; border-radius: 4px;"
+            f"background-color: {Theme.PANEL}; border: 1px solid #555555; border-radius: 4px;"
         )
         self.disc_art_preview.setText("No art")
         right_layout.addWidget(self.disc_art_preview)
@@ -318,7 +308,7 @@ class CDMasterTab(QWidget):
         self.cover_art_preview.setFixedSize(200, 200)
         self.cover_art_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cover_art_preview.setStyleSheet(
-            f"background-color: {_PANEL}; border: 1px solid #555555; border-radius: 4px;"
+            f"background-color: {Theme.PANEL}; border: 1px solid #555555; border-radius: 4px;"
         )
         self.cover_art_preview.setText("No art")
         right_layout.addWidget(self.cover_art_preview)
@@ -341,7 +331,7 @@ class CDMasterTab(QWidget):
         self.back_art_preview.setFixedSize(200, 160)
         self.back_art_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.back_art_preview.setStyleSheet(
-            f"background-color: {_PANEL}; border: 1px solid #555555; border-radius: 4px;"
+            f"background-color: {Theme.PANEL}; border: 1px solid #555555; border-radius: 4px;"
         )
         self.back_art_preview.setText("No art")
         right_layout.addWidget(self.back_art_preview)
@@ -366,6 +356,19 @@ class CDMasterTab(QWidget):
         splitter.setStretchFactor(2, 0)  # right fixed
 
         root.addWidget(splitter)
+        self._apply_styles()
+
+    # ==================================================================
+    # Signals & Refresh
+    # ==================================================================
+
+    def _connect_signals(self) -> None:
+        """Initial data load after UI and signals are ready."""
+        self.refresh_projects()
+
+    def refresh(self) -> None:
+        """Reload project data (called by app.py on tab activation)."""
+        self.refresh_projects()
 
     # ==================================================================
     # Styles
@@ -373,46 +376,46 @@ class CDMasterTab(QWidget):
 
     def _apply_styles(self):
         self.setStyleSheet(f"""
-            CDMasterTab {{ background-color: {_BG}; }}
-            QLabel {{ color: {_TEXT}; }}
+            CDMasterTab {{ background-color: {Theme.BG}; }}
+            QLabel {{ color: {Theme.TEXT}; }}
             QLineEdit {{
-                background-color: {_PANEL}; color: {_TEXT};
+                background-color: {Theme.PANEL}; color: {Theme.TEXT};
                 border: 1px solid #555555; border-radius: 4px; padding: 4px;
             }}
-            QLineEdit:focus {{ border: 1px solid {_ACCENT}; }}
+            QLineEdit:focus {{ border: 1px solid {Theme.ACCENT}; }}
             QListWidget {{
-                background-color: {_PANEL}; color: {_TEXT};
+                background-color: {Theme.PANEL}; color: {Theme.TEXT};
                 border: 1px solid #555555; border-radius: 4px;
             }}
             QListWidget::item {{ padding: 6px; }}
-            QListWidget::item:selected {{ background-color: {_ACCENT}; color: #000000; }}
+            QListWidget::item:selected {{ background-color: {Theme.ACCENT}; color: #000000; }}
             QTableWidget {{
-                background-color: {_BG}; alternate-background-color: #323232;
-                color: {_TEXT}; border: 1px solid #555555; gridline-color: transparent;
+                background-color: {Theme.BG}; alternate-background-color: #323232;
+                color: {Theme.TEXT}; border: 1px solid #555555; gridline-color: transparent;
             }}
-            QTableWidget::item:selected {{ background-color: {_ACCENT}; color: #000000; }}
+            QTableWidget::item:selected {{ background-color: {Theme.ACCENT}; color: #000000; }}
             QHeaderView::section {{
-                background-color: {_PANEL}; color: {_TEXT};
-                border: none; border-bottom: 2px solid {_ACCENT};
+                background-color: {Theme.PANEL}; color: {Theme.TEXT};
+                border: none; border-bottom: 2px solid {Theme.ACCENT};
                 padding: 6px; font-weight: bold;
             }}
             QGroupBox {{
-                color: {_ACCENT}; border: 1px solid #555555;
+                color: {Theme.ACCENT}; border: 1px solid #555555;
                 border-radius: 6px; margin-top: 12px; padding-top: 16px;
                 font-weight: bold;
             }}
             QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
-            QFrame {{ background-color: {_PANEL}; border: 1px solid #555555; border-radius: 4px; }}
+            QFrame {{ background-color: {Theme.PANEL}; border: 1px solid #555555; border-radius: 4px; }}
             QPushButton {{
-                background-color: {_PANEL}; color: {_TEXT};
+                background-color: {Theme.PANEL}; color: {Theme.TEXT};
                 border: 1px solid #555555; border-radius: 4px;
                 padding: 6px 12px; font-weight: bold; font-size: 12px;
             }}
-            QPushButton:hover {{ border-color: {_ACCENT}; background-color: #444444; }}
-            QPushButton:pressed {{ background-color: {_ACCENT}; color: #000000; }}
+            QPushButton:hover {{ border-color: {Theme.ACCENT}; background-color: #444444; }}
+            QPushButton:pressed {{ background-color: {Theme.ACCENT}; color: #000000; }}
             QPushButton:disabled {{ background-color: #3a3a3a; color: #666666; }}
             QPushButton#addFromLibBtn {{
-                background-color: {_ACCENT}; color: #000000; border: none;
+                background-color: {Theme.ACCENT}; color: #000000; border: none;
             }}
             QPushButton#addFromLibBtn:hover {{ background-color: #F0B848; }}
             QPushButton#convertBtn {{
@@ -420,36 +423,36 @@ class CDMasterTab(QWidget):
             }}
             QPushButton#convertBtn:hover {{ background-color: #42A5F5; }}
             QPushButton#burnBtn {{
-                background-color: {_RED}; color: #FFFFFF; border: none;
+                background-color: {Theme.ERROR}; color: #FFFFFF; border: none;
                 font-size: 13px; padding: 8px 16px;
             }}
             QPushButton#burnBtn:hover {{ background-color: #FF5544; }}
             QPushButton#saveMetaBtn {{
-                background-color: {_GREEN}; color: #FFFFFF; border: none;
+                background-color: {Theme.SUCCESS}; color: #FFFFFF; border: none;
             }}
             QPushButton#saveMetaBtn:hover {{ background-color: #66BB6A; }}
             QPushButton#deleteProjectBtn {{
-                background-color: {_RED}; color: #FFFFFF; border: none;
+                background-color: {Theme.ERROR}; color: #FFFFFF; border: none;
             }}
             QPushButton#deleteProjectBtn:hover {{ background-color: #FF5544; }}
-            QCheckBox {{ color: {_TEXT}; spacing: 6px; }}
+            QCheckBox {{ color: {Theme.TEXT}; spacing: 6px; }}
             QCheckBox::indicator {{
                 width: 16px; height: 16px;
                 border: 1px solid #555555; border-radius: 3px;
-                background-color: {_PANEL};
+                background-color: {Theme.PANEL};
             }}
             QCheckBox::indicator:checked {{
-                background-color: {_ACCENT}; border-color: {_ACCENT};
+                background-color: {Theme.ACCENT}; border-color: {Theme.ACCENT};
             }}
             QDoubleSpinBox {{
-                background-color: {_PANEL}; color: {_TEXT};
+                background-color: {Theme.PANEL}; color: {Theme.TEXT};
                 border: 1px solid #555555; border-radius: 4px; padding: 4px;
             }}
             QProgressBar {{
-                background-color: {_BG}; border: 1px solid #555555;
-                border-radius: 4px; text-align: center; color: {_TEXT};
+                background-color: {Theme.BG}; border: 1px solid #555555;
+                border-radius: 4px; text-align: center; color: {Theme.TEXT};
             }}
-            QProgressBar::chunk {{ background-color: {_ACCENT}; border-radius: 3px; }}
+            QProgressBar::chunk {{ background-color: {Theme.ACCENT}; border-radius: 3px; }}
         """)
 
     # ==================================================================
@@ -540,7 +543,7 @@ class CDMasterTab(QWidget):
         self.track_table.setRowCount(0)
         self.track_detail_frame.setVisible(False)
         self.duration_label.setText("0:00 / 80:00")
-        self.duration_label.setStyleSheet(f"color: {_GREEN}; font-weight: bold; font-size: 13px;")
+        self.duration_label.setStyleSheet(f"color: {Theme.SUCCESS}; font-weight: bold; font-size: 13px;")
         self.disc_art_preview.setText("No art")
         self.disc_art_preview.setPixmap(QPixmap())
         self.cover_art_preview.setText("No art")
@@ -591,13 +594,13 @@ class CDMasterTab(QWidget):
             source = track.get("source_path", "")
             if wav_path and os.path.exists(wav_path):
                 status_text = "WAV Ready"
-                status_color = _GREEN
+                status_color = Theme.SUCCESS
             elif source and os.path.exists(source):
                 status_text = "Needs Convert"
-                status_color = _ACCENT
+                status_color = Theme.ACCENT
             else:
                 status_text = "Missing"
-                status_color = _RED
+                status_color = Theme.ERROR
 
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(QColor(status_color))
@@ -614,11 +617,11 @@ class CDMasterTab(QWidget):
         label = f"{tm}:{ts:02d} / 80:00"
 
         if total_seconds > CD_MAX_SECONDS:
-            color = _RED
+            color = Theme.ERROR
         elif total_seconds > CD_WARN_SECONDS:
-            color = _ACCENT
+            color = Theme.ACCENT
         else:
-            color = _GREEN
+            color = Theme.SUCCESS
 
         self.duration_label.setText(label)
         self.duration_label.setStyleSheet(
@@ -943,6 +946,7 @@ class CDMasterTab(QWidget):
 
         pid = self._current_project["id"]
         self._convert_worker = AudioConvertWorker(pid, to_convert)
+        self.register_worker(self._convert_worker)
         self._convert_worker.track_started.connect(self._on_convert_started)
         self._convert_worker.track_completed.connect(self._on_convert_done)
         self._convert_worker.track_error.connect(self._on_convert_error)
@@ -1109,6 +1113,7 @@ class CDMasterTab(QWidget):
             simulate=simulate,
             audio_only=audio_only,
         )
+        self.register_worker(self._burn_worker)
         self._burn_worker.burn_progress.connect(self._on_burn_progress)
         self._burn_worker.burn_completed.connect(self._on_burn_completed)
         self._burn_worker.burn_error.connect(self._on_burn_error)

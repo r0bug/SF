@@ -1,12 +1,14 @@
 import sys
 import os
 from PyQt6.QtWidgets import (
-    QMainWindow, QTabWidget, QStatusBar, QLabel, QApplication, QMessageBox
+    QMainWindow, QTabWidget, QStatusBar, QLabel, QApplication, QMessageBox,
+    QDialog, QVBoxLayout, QTextEdit, QPushButton,
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 
 from database import Database
+from theme import Theme
 from seed_data import SEED_GENRES, SEED_LORE, SEED_SONGS
 from tabs.creator import SongCreatorTab
 from tabs.lore import LoreEditorTab
@@ -16,211 +18,11 @@ from tabs.settings import SettingsTab
 from tabs.lore_discovery import LoreDiscoveryTab
 from tabs.cd_master import CDMasterTab
 from tabs.distribution import DistributionTab
+from tabs.analytics import AnalyticsTab
 
 
-DARK_STYLESHEET = """
-QMainWindow {
-    background-color: #2b2b2b;
-}
-QTabWidget::pane {
-    border: 1px solid #555555;
-    background-color: #2b2b2b;
-}
-QTabBar::tab {
-    background-color: #353535;
-    color: #e0e0e0;
-    padding: 10px 20px;
-    margin-right: 2px;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
-    font-size: 13px;
-}
-QTabBar::tab:selected {
-    background-color: #E8A838;
-    color: #1a1a1a;
-    font-weight: bold;
-}
-QTabBar::tab:hover:!selected {
-    background-color: #454545;
-}
-QWidget {
-    background-color: #2b2b2b;
-    color: #e0e0e0;
-}
-QLabel {
-    color: #e0e0e0;
-}
-QTextEdit, QLineEdit, QPlainTextEdit {
-    background-color: #353535;
-    color: #e0e0e0;
-    border: 1px solid #555555;
-    border-radius: 4px;
-    padding: 4px;
-    selection-background-color: #E8A838;
-    selection-color: #1a1a1a;
-}
-QTextEdit:focus, QLineEdit:focus {
-    border: 1px solid #E8A838;
-}
-QPushButton {
-    background-color: #454545;
-    color: #e0e0e0;
-    border: 1px solid #555555;
-    border-radius: 4px;
-    padding: 8px 16px;
-    font-size: 13px;
-}
-QPushButton:hover {
-    background-color: #555555;
-    border-color: #E8A838;
-}
-QPushButton:pressed {
-    background-color: #E8A838;
-    color: #1a1a1a;
-}
-QPushButton:disabled {
-    background-color: #3a3a3a;
-    color: #666666;
-    border-color: #444444;
-}
-QComboBox {
-    background-color: #353535;
-    color: #e0e0e0;
-    border: 1px solid #555555;
-    border-radius: 4px;
-    padding: 6px 10px;
-}
-QComboBox::drop-down {
-    border: none;
-    width: 24px;
-}
-QComboBox QAbstractItemView {
-    background-color: #353535;
-    color: #e0e0e0;
-    selection-background-color: #E8A838;
-    selection-color: #1a1a1a;
-    border: 1px solid #555555;
-}
-QTableWidget {
-    background-color: #353535;
-    color: #e0e0e0;
-    gridline-color: #454545;
-    border: 1px solid #555555;
-    selection-background-color: #E8A838;
-    selection-color: #1a1a1a;
-    alternate-background-color: #3a3a3a;
-}
-QTableWidget::item {
-    padding: 4px;
-}
-QHeaderView::section {
-    background-color: #404040;
-    color: #e0e0e0;
-    padding: 6px;
-    border: 1px solid #555555;
-    font-weight: bold;
-}
-QListWidget {
-    background-color: #353535;
-    color: #e0e0e0;
-    border: 1px solid #555555;
-    border-radius: 4px;
-}
-QListWidget::item {
-    padding: 6px;
-}
-QListWidget::item:selected {
-    background-color: #E8A838;
-    color: #1a1a1a;
-}
-QListWidget::item:hover:!selected {
-    background-color: #454545;
-}
-QCheckBox {
-    color: #e0e0e0;
-    spacing: 8px;
-}
-QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
-    border: 1px solid #555555;
-    border-radius: 3px;
-    background-color: #353535;
-}
-QCheckBox::indicator:checked {
-    background-color: #E8A838;
-    border-color: #E8A838;
-}
-QSpinBox {
-    background-color: #353535;
-    color: #e0e0e0;
-    border: 1px solid #555555;
-    border-radius: 4px;
-    padding: 4px;
-}
-QGroupBox {
-    color: #E8A838;
-    border: 1px solid #555555;
-    border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 16px;
-    font-weight: bold;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 6px;
-}
-QSplitter::handle {
-    background-color: #454545;
-    width: 3px;
-    height: 3px;
-}
-QScrollBar:vertical {
-    background-color: #2b2b2b;
-    width: 12px;
-    margin: 0;
-}
-QScrollBar::handle:vertical {
-    background-color: #555555;
-    border-radius: 6px;
-    min-height: 20px;
-}
-QScrollBar::handle:vertical:hover {
-    background-color: #E8A838;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-    height: 0;
-}
-QScrollBar:horizontal {
-    background-color: #2b2b2b;
-    height: 12px;
-    margin: 0;
-}
-QScrollBar::handle:horizontal {
-    background-color: #555555;
-    border-radius: 6px;
-    min-width: 20px;
-}
-QScrollBar::handle:horizontal:hover {
-    background-color: #E8A838;
-}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-    width: 0;
-}
-QStatusBar {
-    background-color: #1e1e1e;
-    color: #888888;
-    border-top: 1px solid #454545;
-    font-size: 12px;
-}
-QMessageBox {
-    background-color: #2b2b2b;
-}
-QMessageBox QLabel {
-    color: #e0e0e0;
-}
-"""
+# Backward-compatible alias — main.py imports this
+DARK_STYLESHEET = Theme.global_stylesheet()
 
 
 class MainWindow(QMainWindow):
@@ -235,6 +37,7 @@ class MainWindow(QMainWindow):
 
         self._setup_tabs()
         self._setup_status_bar()
+        self._setup_shortcuts()
 
     def _seed_if_needed(self):
         if self.db.is_seeded():
@@ -334,6 +137,7 @@ class MainWindow(QMainWindow):
         self.discovery_tab = LoreDiscoveryTab(self.db)
         self.cd_master_tab = CDMasterTab(self.db)
         self.distribution_tab = DistributionTab(self.db)
+        self.analytics_tab = AnalyticsTab(self.db)
 
         self.tabs.addTab(self.creator_tab, "🎵 Song Creator")
         self.tabs.addTab(self.lore_tab, "📖 Lore Editor")
@@ -342,6 +146,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.library_tab, "🗄️ Song Library")
         self.tabs.addTab(self.cd_master_tab, "💿 CD Master")
         self.tabs.addTab(self.distribution_tab, "📤 Distribution")
+        self.tabs.addTab(self.analytics_tab, "📊 Analytics")
         self.tabs.addTab(self.settings_tab, "⚙️ Settings")
 
         # Refresh tabs when switching to them
@@ -351,22 +156,9 @@ class MainWindow(QMainWindow):
 
     def _on_tab_changed(self, index):
         widget = self.tabs.widget(index)
-        if widget is self.creator_tab:
-            self.creator_tab.refresh_genres()
-            self.creator_tab.refresh_lore()
-        elif widget is self.lore_tab:
-            self.lore_tab.load_lore_list()
-        elif widget is self.genre_tab:
-            self.genre_tab.load_genres()
-        elif widget is self.library_tab:
-            self.library_tab.load_songs()
-        elif widget is self.cd_master_tab:
-            self.cd_master_tab.refresh_projects()
-        elif widget is self.distribution_tab:
-            self.distribution_tab.load_distributions()
-        elif widget is self.settings_tab:
-            self.settings_tab.load_settings()
-        # discovery_tab has no refresh needed on tab switch
+        # All tabs implement refresh() via BaseTab; discovery is a no-op
+        if hasattr(widget, "refresh"):
+            widget.refresh()
         self._update_status_bar()
 
     def _setup_status_bar(self):
@@ -393,11 +185,60 @@ class MainWindow(QMainWindow):
         api_key = self.db.get_config('api_key')
         if api_key:
             self.api_label.setText("API: Configured")
-            self.api_label.setStyleSheet("color: #4CAF50;")
+            self.api_label.setStyleSheet(f"color: {Theme.SUCCESS};")
         else:
             self.api_label.setText("API: Not configured")
-            self.api_label.setStyleSheet("color: #F44336;")
+            self.api_label.setStyleSheet(f"color: {Theme.ERROR};")
+
+    def _setup_shortcuts(self):
+        """Register application-wide keyboard shortcuts."""
+        # Tab switching: Ctrl+1 through Ctrl+8
+        for i in range(min(8, self.tabs.count())):
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self)
+            shortcut.activated.connect(lambda idx=i: self.tabs.setCurrentIndex(idx))
+
+        # F5 — Refresh current tab
+        QShortcut(QKeySequence("F5"), self).activated.connect(self._refresh_current_tab)
+
+        # Ctrl+? — Help dialog
+        QShortcut(QKeySequence("Ctrl+/"), self).activated.connect(self._show_help)
+
+    def _refresh_current_tab(self):
+        widget = self.tabs.currentWidget()
+        if hasattr(widget, "refresh"):
+            widget.refresh()
+        self._update_status_bar()
+
+    def _show_help(self):
+        """Show the keyboard shortcuts help dialog."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Keyboard Shortcuts")
+        dlg.setMinimumSize(420, 340)
+        layout = QVBoxLayout(dlg)
+
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setHtml(f"""
+        <h3 style="color: {Theme.ACCENT};">Keyboard Shortcuts</h3>
+        <table style="font-size: 13px;">
+        <tr><td><b>Ctrl+1</b> &ndash; <b>Ctrl+8</b></td><td>Switch to tab 1&ndash;8</td></tr>
+        <tr><td><b>F5</b></td><td>Refresh current tab</td></tr>
+        <tr><td><b>Ctrl+/</b></td><td>Show this help dialog</td></tr>
+        </table>
+        """)
+        layout.addWidget(text)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn)
+
+        dlg.exec()
 
     def closeEvent(self, event):
+        # Clean up all tab workers before closing
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if hasattr(tab, "cleanup"):
+                tab.cleanup()
         self.db.close()
         event.accept()

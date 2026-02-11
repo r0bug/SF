@@ -8,7 +8,7 @@ Usage:
     from automation.xvfb_manager import XvfbManager
 
     xvfb = XvfbManager()
-    display = xvfb.start()   # ":99"
+    display = xvfb.start()   # e.g. ":99"
     # ... launch browser, do work ...
     xvfb.stop()
 """
@@ -24,15 +24,36 @@ logger = logging.getLogger("songfactory.automation")
 class XvfbManager:
     """Manages an Xvfb virtual display subprocess."""
 
-    def __init__(self, display: str = ":99", resolution: str = "1920x1080x24"):
+    def __init__(self, display: str | None = None, resolution: str = "1920x1080x24"):
         """
         Args:
-            display: X display number (e.g. ":99").
+            display: X display number (e.g. ":99").  If None, an available
+                     display is auto-detected in start().
             resolution: Screen resolution as WxHxD string.
         """
         self.display = display
         self.resolution = resolution
         self._process = None
+
+    @staticmethod
+    def _find_free_display(start: int = 99, end: int = 200) -> str:
+        """Find an unused X display number by checking lock files.
+
+        Scans /tmp/.X{N}-lock for display numbers from *start* to *end*.
+
+        Returns:
+            Display string like ":99".
+
+        Raises:
+            RuntimeError: If no free display is found in the range.
+        """
+        for num in range(start, end):
+            lock_file = f"/tmp/.X{num}-lock"
+            if not os.path.exists(lock_file):
+                return f":{num}"
+        raise RuntimeError(
+            f"No free X display found in range :{start}-:{end - 1}"
+        )
 
     def start(self) -> str:
         """Start Xvfb subprocess and set the DISPLAY environment variable.
@@ -49,6 +70,11 @@ class XvfbManager:
         if self._process and self._process.poll() is None:
             logger.info(f"Xvfb already running on {self.display}")
             return self.display
+
+        # Auto-detect display if not specified
+        if self.display is None:
+            self.display = self._find_free_display()
+            logger.info(f"Auto-detected free display: {self.display}")
 
         cmd = [
             "Xvfb",

@@ -12,6 +12,8 @@ from typing import Optional
 
 from anthropic import Anthropic
 
+from ai_models import DEFAULT_MODEL
+
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -58,9 +60,9 @@ Respond in this exact JSON format:
 class SongGenerator:
     """Generates songs via the Anthropic API with lore context and genre awareness."""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, api_key: str, model: str | None = None):
         self.client = Anthropic(api_key=api_key)
-        self.model = model
+        self.model = model or DEFAULT_MODEL
 
     # ------------------------------------------------------------------
     # Public API

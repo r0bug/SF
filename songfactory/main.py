@@ -7,16 +7,20 @@ import os
 # Add the songfactory directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from logging_config import setup_logging
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
-from app import MainWindow, DARK_STYLESHEET
+from theme import Theme
+from app import MainWindow
 
 
 def main():
+    setup_logging()
+
     app = QApplication(sys.argv)
     app.setApplicationName("Song Factory")
     app.setOrganizationName("Yakima Finds")
-    app.setStyleSheet(DARK_STYLESHEET)
+    app.setStyleSheet(Theme.global_stylesheet())
 
     window = MainWindow()
     window.show()

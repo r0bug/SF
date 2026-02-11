@@ -14,16 +14,6 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 logger = logging.getLogger("songfactory.automation")
 
-# Set up file logging (same as browser_worker)
-LOG_DIR = Path.home() / ".songfactory"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE = LOG_DIR / "automation.log"
-
-file_handler = logging.FileHandler(LOG_FILE)
-file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-logger.addHandler(file_handler)
-logger.setLevel(logging.INFO)
-
 # MusicGPT API base
 API_BASE = "https://api.musicgpt.com/api/public/v1"
 

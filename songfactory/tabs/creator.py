@@ -19,99 +19,10 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from api_client import SongGenerator, SongGenerationError
-
-
-# ---------------------------------------------------------------------------
-# Colour constants (dark theme)
-# ---------------------------------------------------------------------------
-_BG = "#2b2b2b"
-_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
-_GREEN = "#4CAF50"
-_RED = "#F44336"
-
-_PANEL_STYLE = f"""
-    QWidget {{
-        background-color: {_PANEL};
-        color: {_TEXT};
-    }}
-    QTextEdit, QLineEdit, QComboBox {{
-        background-color: {_BG};
-        color: {_TEXT};
-        border: 1px solid #555;
-        border-radius: 4px;
-        padding: 4px;
-    }}
-    QLabel {{
-        color: {_TEXT};
-    }}
-    QCheckBox {{
-        color: {_TEXT};
-    }}
-    QCheckBox::indicator {{
-        width: 16px;
-        height: 16px;
-    }}
-"""
-
-_ACCENT_BUTTON_STYLE = f"""
-    QPushButton {{
-        background-color: {_ACCENT};
-        color: #1a1a1a;
-        border: none;
-        border-radius: 6px;
-        padding: 10px 24px;
-        font-weight: bold;
-        font-size: 14px;
-    }}
-    QPushButton:hover {{
-        background-color: #f0b848;
-    }}
-    QPushButton:pressed {{
-        background-color: #d09828;
-    }}
-    QPushButton:disabled {{
-        background-color: #666;
-        color: #999;
-    }}
-"""
-
-_SECONDARY_BUTTON_STYLE = f"""
-    QPushButton {{
-        background-color: #444;
-        color: {_TEXT};
-        border: 1px solid #666;
-        border-radius: 4px;
-        padding: 6px 16px;
-        font-size: 12px;
-    }}
-    QPushButton:hover {{
-        background-color: #555;
-    }}
-    QPushButton:pressed {{
-        background-color: #333;
-    }}
-    QPushButton:disabled {{
-        background-color: #3a3a3a;
-        color: #666;
-    }}
-"""
-
-_COLLAPSIBLE_TOGGLE_STYLE = f"""
-    QPushButton {{
-        background-color: transparent;
-        color: {_ACCENT};
-        border: none;
-        text-align: left;
-        padding: 6px 0;
-        font-size: 13px;
-        font-weight: bold;
-    }}
-    QPushButton:hover {{
-        color: #f0b848;
-    }}
-"""
+from validators import validate_song
+from tabs.base_tab import BaseTab
+from theme import Theme
+from event_bus import event_bus
 
 
 # ===================================================================
@@ -163,12 +74,11 @@ class GenerateWorker(QThread):
 # SongCreatorTab
 # ===================================================================
 
-class SongCreatorTab(QWidget):
+class SongCreatorTab(BaseTab):
     """Main song creation workflow tab."""
 
     def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
+        # Instance variables needed before _init_ui() runs
         self._worker = None
         self._genres_cache: list[dict] = []
         self._last_result: dict | None = None
@@ -176,22 +86,23 @@ class SongCreatorTab(QWidget):
         self._category_checkboxes: dict[str, QCheckBox] = {}
         self._lore_id_to_category: dict[int, str] = {}
 
-        self._build_ui()
-        self.refresh_genres()
-        self.refresh_lore()
+        # BaseTab.__init__ sets self.db, calls _init_ui() and _connect_signals()
+        super().__init__(db, parent)
+
+        self.refresh()
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
-    def _build_ui(self):
+    def _init_ui(self):
         """Assemble the full tab layout."""
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setStyleSheet(
-            f"QSplitter {{ background-color: {_BG}; }}"
+            f"QSplitter {{ background-color: {Theme.BG}; }}"
             f"QSplitter::handle {{ background-color: #444; width: 3px; }}"
         )
 
@@ -206,14 +117,14 @@ class SongCreatorTab(QWidget):
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setStyleSheet(_PANEL_STYLE)
+        panel.setStyleSheet(Theme.panel_style())
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
         # 1. Prompt label
         lbl_prompt = QLabel("What do you want a song about?")
-        lbl_prompt.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {_TEXT};")
+        lbl_prompt.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {Theme.TEXT};")
         layout.addWidget(lbl_prompt)
 
         # 2. User input text area
@@ -226,7 +137,7 @@ class SongCreatorTab(QWidget):
 
         # 3. Genre combo
         lbl_genre = QLabel("Genre")
-        lbl_genre.setStyleSheet(f"color: {_TEXT}; font-weight: bold;")
+        lbl_genre.setStyleSheet(f"color: {Theme.TEXT}; font-weight: bold;")
         layout.addWidget(lbl_genre)
 
         self.genre_combo = QComboBox()
@@ -234,7 +145,7 @@ class SongCreatorTab(QWidget):
 
         # 4. Style notes
         lbl_style = QLabel("Style notes")
-        lbl_style.setStyleSheet(f"color: {_TEXT}; font-weight: bold;")
+        lbl_style.setStyleSheet(f"color: {Theme.TEXT}; font-weight: bold;")
         layout.addWidget(lbl_style)
 
         self.style_input = QLineEdit()
@@ -243,7 +154,7 @@ class SongCreatorTab(QWidget):
 
         # 5. Collapsible lore context section
         self._lore_toggle_btn = QPushButton("\u25b6  Lore Context")
-        self._lore_toggle_btn.setStyleSheet(_COLLAPSIBLE_TOGGLE_STYLE)
+        self._lore_toggle_btn.setStyleSheet(Theme.collapsible_toggle_style())
         self._lore_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._lore_toggle_btn.clicked.connect(self._toggle_lore_section)
         layout.addWidget(self._lore_toggle_btn)
@@ -255,7 +166,7 @@ class SongCreatorTab(QWidget):
         self._lore_container.setMaximumHeight(350)
         self._lore_container.setStyleSheet(
             f"QScrollArea {{ border: 1px solid #555; border-radius: 4px; "
-            f"background-color: {_BG}; }}"
+            f"background-color: {Theme.BG}; }}"
         )
 
         self._lore_inner = QWidget()
@@ -267,7 +178,7 @@ class SongCreatorTab(QWidget):
 
         # 6. Generate button
         self.generate_btn = QPushButton("Generate Song")
-        self.generate_btn.setStyleSheet(_ACCENT_BUTTON_STYLE)
+        self.generate_btn.setStyleSheet(Theme.accent_button_style())
         self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.generate_btn.clicked.connect(self.generate_song)
         layout.addWidget(self.generate_btn)
@@ -279,14 +190,14 @@ class SongCreatorTab(QWidget):
 
     def _build_right_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setStyleSheet(_PANEL_STYLE)
+        panel.setStyleSheet(Theme.panel_style())
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
         # 1. Generated prompt label
         lbl_prompt = QLabel("Generated Prompt")
-        lbl_prompt.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {_TEXT};")
+        lbl_prompt.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {Theme.TEXT};")
         layout.addWidget(lbl_prompt)
 
         # 2. Prompt text edit (editable)
@@ -298,7 +209,7 @@ class SongCreatorTab(QWidget):
 
         # 3. Character counter
         self.char_count_label = QLabel("0 / 300")
-        self.char_count_label.setStyleSheet(f"color: {_GREEN}; font-size: 12px;")
+        self.char_count_label.setStyleSheet(f"color: {Theme.SUCCESS}; font-size: 12px;")
         self.char_count_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
@@ -306,7 +217,7 @@ class SongCreatorTab(QWidget):
 
         # 4. Generated lyrics label
         lbl_lyrics = QLabel("Generated Lyrics")
-        lbl_lyrics.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {_TEXT};")
+        lbl_lyrics.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {Theme.TEXT};")
         layout.addWidget(lbl_lyrics)
 
         # 5. Lyrics text edit (monospace, editable)
@@ -322,19 +233,19 @@ class SongCreatorTab(QWidget):
         btn_row.setSpacing(8)
 
         self.save_btn = QPushButton("Save to Database")
-        self.save_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
+        self.save_btn.setStyleSheet(Theme.secondary_button_style())
         self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.save_btn.clicked.connect(lambda: self.save_song(status="draft"))
         btn_row.addWidget(self.save_btn)
 
         self.queue_btn = QPushButton("Queue for Lalals")
-        self.queue_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
+        self.queue_btn.setStyleSheet(Theme.secondary_button_style())
         self.queue_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.queue_btn.clicked.connect(lambda: self.save_song(status="queued"))
         btn_row.addWidget(self.queue_btn)
 
         self.copy_prompt_btn = QPushButton("Copy Prompt")
-        self.copy_prompt_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
+        self.copy_prompt_btn.setStyleSheet(Theme.secondary_button_style())
         self.copy_prompt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.copy_prompt_btn.clicked.connect(
             lambda: self.copy_to_clipboard(self.prompt_output.toPlainText())
@@ -342,7 +253,7 @@ class SongCreatorTab(QWidget):
         btn_row.addWidget(self.copy_prompt_btn)
 
         self.copy_lyrics_btn = QPushButton("Copy Lyrics")
-        self.copy_lyrics_btn.setStyleSheet(_SECONDARY_BUTTON_STYLE)
+        self.copy_lyrics_btn.setStyleSheet(Theme.secondary_button_style())
         self.copy_lyrics_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.copy_lyrics_btn.clicked.connect(
             lambda: self.copy_to_clipboard(self.lyrics_output.toPlainText())
@@ -365,6 +276,11 @@ class SongCreatorTab(QWidget):
     # ------------------------------------------------------------------
     # Data refresh helpers
     # ------------------------------------------------------------------
+
+    def _connect_signals(self):
+        """Connect event bus signals for cross-tab refresh."""
+        event_bus.genres_changed.connect(self.refresh_genres)
+        event_bus.lore_changed.connect(self.refresh_lore)
 
     def refresh_genres(self):
         """Reload the genre dropdown from the database."""
@@ -406,7 +322,7 @@ class SongCreatorTab(QWidget):
 
         select_all_btn = QPushButton("Select All")
         select_all_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #444; color: {_TEXT}; border: 1px solid #666; "
+            f"QPushButton {{ background-color: #444; color: {Theme.TEXT}; border: 1px solid #666; "
             f"border-radius: 3px; padding: 2px 8px; font-size: 11px; }} "
             f"QPushButton:hover {{ background-color: #555; }}"
         )
@@ -417,7 +333,7 @@ class SongCreatorTab(QWidget):
 
         deselect_all_btn = QPushButton("Deselect All")
         deselect_all_btn.setStyleSheet(
-            f"QPushButton {{ background-color: #444; color: {_TEXT}; border: 1px solid #666; "
+            f"QPushButton {{ background-color: #444; color: {Theme.TEXT}; border: 1px solid #666; "
             f"border-radius: 3px; padding: 2px 8px; font-size: 11px; }} "
             f"QPushButton:hover {{ background-color: #555; }}"
         )
@@ -458,7 +374,7 @@ class SongCreatorTab(QWidget):
             # Category header label
             header = QLabel(cat.upper())
             header.setStyleSheet(
-                f"color: {_ACCENT}; font-weight: bold; font-size: 12px; "
+                f"color: {Theme.ACCENT}; font-weight: bold; font-size: 12px; "
                 f"margin-top: 6px; margin-bottom: 2px;"
             )
             self._lore_layout.addWidget(header)
@@ -466,7 +382,7 @@ class SongCreatorTab(QWidget):
             # Category-level toggle checkbox
             cat_cb = QCheckBox(f"All {cat}")
             cat_cb.setStyleSheet(
-                f"QCheckBox {{ color: {_ACCENT}; font-size: 11px; font-weight: bold; }}"
+                f"QCheckBox {{ color: {Theme.ACCENT}; font-size: 11px; font-weight: bold; }}"
             )
             cat_cb.setTristate(True)
             self._category_checkboxes[cat] = cat_cb
@@ -493,6 +409,11 @@ class SongCreatorTab(QWidget):
             self._update_category_checkbox(cat)
 
         self._lore_layout.addStretch()
+
+    def refresh(self):
+        """Reload genres and lore from the database."""
+        self.refresh_genres()
+        self.refresh_lore()
 
     def _refresh_creator_presets(self):
         """Reload the preset dropdown in the creator tab."""
@@ -632,6 +553,7 @@ class SongCreatorTab(QWidget):
             style_notes=style_notes,
             parent=self,
         )
+        self.register_worker(self._worker)
         self._worker.finished.connect(self.on_generation_complete)
         self._worker.error.connect(self._on_generation_error)
         self._worker.start()
@@ -679,9 +601,9 @@ class SongCreatorTab(QWidget):
         count = len(self.prompt_output.toPlainText())
         self.char_count_label.setText(f"{count} / 300")
         if count <= 300:
-            self.char_count_label.setStyleSheet(f"color: {_GREEN}; font-size: 12px;")
+            self.char_count_label.setStyleSheet(f"color: {Theme.SUCCESS}; font-size: 12px;")
         else:
-            self.char_count_label.setStyleSheet(f"color: {_RED}; font-size: 12px;")
+            self.char_count_label.setStyleSheet(f"color: {Theme.ERROR}; font-size: 12px;")
 
     # ------------------------------------------------------------------
     # Save / copy actions
@@ -692,22 +614,23 @@ class SongCreatorTab(QWidget):
         prompt_text = self.prompt_output.toPlainText().strip()
         lyrics_text = self.lyrics_output.toPlainText().strip()
 
-        if not prompt_text and not lyrics_text:
-            QMessageBox.warning(
-                self,
-                "Nothing to Save",
-                "Generate or enter a song before saving.",
-            )
+        # Derive title from last result or use placeholder
+        title = "Untitled Song"
+        if self._last_result:
+            title = self._last_result.get("title", title)
+
+        errors = validate_song(title, prompt_text, lyrics_text)
+        if errors:
+            msg = "\n".join(f"- {e.field}: {e.message}" for e in errors)
+            QMessageBox.warning(self, "Validation Error", msg)
             return
 
-        # Determine title and genre label from the last generation result,
-        # falling back to sensible defaults.
-        title = "Untitled Song"
+        # Determine genre label from the last generation result,
+        # falling back to sensible defaults. (title already derived above)
         genre_label = "Unknown"
         genre_id = None
 
         if self._last_result:
-            title = self._last_result.get("title", title)
             genre_label = self._last_result.get("genre_label", genre_label)
 
         # Try to match genre_id from the combo selection
@@ -743,6 +666,7 @@ class SongCreatorTab(QWidget):
                 "Song Saved",
                 f'"{title}" has been {status_label} (ID: {song_id}).',
             )
+            event_bus.songs_changed.emit()
         except Exception as exc:
             QMessageBox.critical(
                 self,

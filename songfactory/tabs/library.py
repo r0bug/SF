@@ -19,6 +19,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QFont, QDesktopServices, QAction
 
+from tabs.base_tab import BaseTab
+from theme import Theme
+from event_bus import event_bus
+
 # Guard the import -- playwright may not be installed
 try:
     from automation.browser_worker import LalalsWorker
@@ -39,30 +43,7 @@ except ImportError:
     _HAS_SYNCER = False
 
 
-# ---------------------------------------------------------------------------
-# Color constants
-# ---------------------------------------------------------------------------
-
-_BG_MAIN = "#2b2b2b"
-_BG_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
-
-_STATUS_COLORS = {
-    "draft":      "#888888",
-    "queued":     "#2196F3",
-    "processing": "#FFC107",
-    "submitted":  "#9C27B0",
-    "completed":  "#4CAF50",
-    "error":      "#F44336",
-    "imported":   "#00BCD4",
-}
-
 _ALL_STATUSES = ["draft", "queued", "processing", "submitted", "completed", "error", "imported"]
-
-# Row colors for alternating rows
-_ROW_EVEN = "#2b2b2b"
-_ROW_ODD = "#323232"
 
 
 class StatusBadgeWidget(QLabel):
@@ -71,7 +52,7 @@ class StatusBadgeWidget(QLabel):
     def __init__(self, status: str, parent=None):
         super().__init__(parent)
         self.setText(status)
-        color = _STATUS_COLORS.get(status, "#888888")
+        color = Theme.STATUS_COLORS.get(status, "#888888")
         # Determine foreground: dark text on bright backgrounds, light otherwise
         fg = "#000000" if status in ("processing",) else "#FFFFFF"
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -87,23 +68,20 @@ class StatusBadgeWidget(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
 
-class SongLibraryTab(QWidget):
+class SongLibraryTab(BaseTab):
     """Main widget for the Song Library tab."""
 
     def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
+        # Instance variables MUST be initialised before super().__init__
+        # because BaseTab.__init__ calls _init_ui() and _connect_signals().
         self.all_songs: list[dict] = []
         self.filtered_songs: list[dict] = []
         self.selected_song: dict | None = None
         self._worker: "LalalsWorker | None" = None
+        self._detail_syncer = None
 
-        self._search_timer = QTimer(self)
-        self._search_timer.setSingleShot(True)
-        self._search_timer.setInterval(300)
-        self._search_timer.timeout.connect(self.apply_filters)
+        super().__init__(db, parent)  # calls _init_ui(), _connect_signals()
 
-        self._init_ui()
         self._apply_styles()
         self.load_songs()
 
@@ -113,6 +91,11 @@ class SongLibraryTab(QWidget):
 
     def _init_ui(self):
         """Build the complete widget layout."""
+        # Search debounce timer (signal connected in _connect_signals)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(300)
+
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(10)
@@ -127,13 +110,11 @@ class SongLibraryTab(QWidget):
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search songs...")
         self.search_box.setClearButtonEnabled(True)
-        self.search_box.textChanged.connect(self._on_search_text_changed)
         filter_bar.addWidget(self.search_box, stretch=3)
 
         self.genre_filter = QComboBox()
         self.genre_filter.setMinimumWidth(160)
         self.genre_filter.addItem("All Genres", userData=None)
-        self.genre_filter.currentIndexChanged.connect(self.apply_filters)
         filter_bar.addWidget(self.genre_filter, stretch=1)
 
         self.status_filter = QComboBox()
@@ -141,10 +122,61 @@ class SongLibraryTab(QWidget):
         self.status_filter.addItem("All Statuses", userData=None)
         for s in _ALL_STATUSES:
             self.status_filter.addItem(s, userData=s)
-        self.status_filter.currentIndexChanged.connect(self.apply_filters)
         filter_bar.addWidget(self.status_filter, stretch=1)
 
+        self.refresh_library_btn = QPushButton("Refresh")
+        self.refresh_library_btn.setObjectName("refreshLibraryBtn")
+        self.refresh_library_btn.setFixedHeight(28)
+        self.refresh_library_btn.setToolTip("Reload song list from database")
+        self.refresh_library_btn.setStyleSheet(
+            f"background-color: {Theme.PANEL}; color: {Theme.TEXT}; "
+            "border: 1px solid #555; border-radius: 4px; "
+            "padding: 4px 12px; font-size: 12px;"
+        )
+        filter_bar.addWidget(self.refresh_library_btn)
+
         root_layout.addLayout(filter_bar)
+
+        # ---- Batch actions bar ----
+        batch_bar = QHBoxLayout()
+        batch_bar.setSpacing(8)
+
+        self.batch_delete_btn = QPushButton("Delete Selected")
+        self.batch_delete_btn.setStyleSheet(
+            f"background-color: {Theme.ERROR}; color: #FFFFFF; border: none; "
+            "border-radius: 4px; padding: 6px 12px; font-weight: bold; font-size: 12px;"
+        )
+        self.batch_delete_btn.clicked.connect(self._batch_delete)
+        self.batch_delete_btn.setVisible(False)
+        batch_bar.addWidget(self.batch_delete_btn)
+
+        self.batch_status_btn = QPushButton("Set Status...")
+        self.batch_status_btn.setStyleSheet(
+            f"background-color: {Theme.PANEL}; color: {Theme.TEXT}; border: 1px solid #555; "
+            "border-radius: 4px; padding: 6px 12px; font-weight: bold; font-size: 12px;"
+        )
+        self.batch_status_btn.clicked.connect(self._batch_set_status)
+        self.batch_status_btn.setVisible(False)
+        batch_bar.addWidget(self.batch_status_btn)
+
+        self.batch_export_btn = QPushButton("Export Selected")
+        self.batch_export_btn.setStyleSheet(
+            f"background-color: {Theme.PANEL}; color: {Theme.TEXT}; border: 1px solid #555; "
+            "border-radius: 4px; padding: 6px 12px; font-weight: bold; font-size: 12px;"
+        )
+        self.batch_export_btn.clicked.connect(self._batch_export)
+        self.batch_export_btn.setVisible(False)
+        batch_bar.addWidget(self.batch_export_btn)
+
+        self.batch_selection_label = QLabel("")
+        self.batch_selection_label.setStyleSheet(
+            f"color: {Theme.ACCENT}; font-size: 12px; font-weight: bold;"
+        )
+        self.batch_selection_label.setVisible(False)
+        batch_bar.addWidget(self.batch_selection_label)
+
+        batch_bar.addStretch()
+        root_layout.addLayout(batch_bar)
 
         # ---- Song table ----
         self.table = QTableWidget()
@@ -158,15 +190,13 @@ class SongLibraryTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(False)
-        self.table.itemSelectionChanged.connect(self.on_row_selected)
 
         # Enable custom context menu on the table
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
 
         root_layout.addWidget(self.table, stretch=3)
 
@@ -180,7 +210,7 @@ class SongLibraryTab(QWidget):
 
         self.detail_title_label = QLabel()
         self.detail_title_label.setStyleSheet(
-            f"font-size: 14px; font-weight: bold; color: {_ACCENT};"
+            f"font-size: 14px; font-weight: bold; color: {Theme.ACCENT};"
         )
         detail_layout.addWidget(self.detail_title_label)
 
@@ -212,30 +242,24 @@ class SongLibraryTab(QWidget):
         btn_row.setSpacing(8)
 
         self.save_btn = QPushButton("Save Changes")
-        self.save_btn.clicked.connect(self.save_changes)
         btn_row.addWidget(self.save_btn)
 
         self.requeue_btn = QPushButton("Re-queue")
-        self.requeue_btn.clicked.connect(self.requeue_song)
         btn_row.addWidget(self.requeue_btn)
 
         self.process_this_btn = QPushButton("Process This Song")
         self.process_this_btn.setObjectName("processThisBtn")
-        self.process_this_btn.clicked.connect(self._process_single_song)
         btn_row.addWidget(self.process_this_btn)
 
         self.copy_prompt_btn = QPushButton("Copy Prompt")
-        self.copy_prompt_btn.clicked.connect(self._copy_prompt)
         btn_row.addWidget(self.copy_prompt_btn)
 
         self.copy_lyrics_btn = QPushButton("Copy Lyrics")
-        self.copy_lyrics_btn.clicked.connect(self._copy_lyrics)
         btn_row.addWidget(self.copy_lyrics_btn)
 
         btn_row.addStretch()
 
         self.delete_btn = QPushButton("Delete")
-        self.delete_btn.clicked.connect(self.delete_song)
         btn_row.addWidget(self.delete_btn)
 
         detail_layout.addLayout(btn_row)
@@ -260,7 +284,7 @@ class SongLibraryTab(QWidget):
         self.queue_count_label = QLabel("Queue: 0 songs waiting")
         self.queue_count_label.setObjectName("queueCountLabel")
         self.queue_count_label.setStyleSheet(
-            f"color: {_TEXT}; font-size: 12px; font-weight: bold;"
+            f"color: {Theme.TEXT}; font-size: 12px; font-weight: bold;"
         )
         queue_layout.addWidget(self.queue_count_label)
 
@@ -268,14 +292,12 @@ class SongLibraryTab(QWidget):
         self.login_btn = QPushButton("Login to Lalals")
         self.login_btn.setObjectName("loginBtn")
         self.login_btn.setFixedHeight(30)
-        self.login_btn.clicked.connect(self._open_login_browser)
         queue_layout.addWidget(self.login_btn)
 
         # Process Queue button
         self.process_queue_btn = QPushButton("Process Queue")
         self.process_queue_btn.setObjectName("processQueueBtn")
         self.process_queue_btn.setFixedHeight(30)
-        self.process_queue_btn.clicked.connect(self._start_queue_processing)
         queue_layout.addWidget(self.process_queue_btn)
 
         # Stop button
@@ -283,7 +305,6 @@ class SongLibraryTab(QWidget):
         self.stop_queue_btn.setObjectName("stopQueueBtn")
         self.stop_queue_btn.setFixedHeight(30)
         self.stop_queue_btn.setEnabled(False)
-        self.stop_queue_btn.clicked.connect(self._stop_queue_processing)
         queue_layout.addWidget(self.stop_queue_btn)
 
         # Refresh button — user clicks this when generation is done
@@ -291,14 +312,12 @@ class SongLibraryTab(QWidget):
         self.refresh_btn.setObjectName("refreshBtn")
         self.refresh_btn.setFixedHeight(30)
         self.refresh_btn.setEnabled(False)
-        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
         queue_layout.addWidget(self.refresh_btn)
 
         # Sync button — full history scan
         self.sync_btn = QPushButton("Sync History")
         self.sync_btn.setObjectName("syncBtn")
         self.sync_btn.setFixedHeight(30)
-        self.sync_btn.clicked.connect(self._open_import_history)
         queue_layout.addWidget(self.sync_btn)
 
         # Sync Details button — fetch prompt + lyrics for songs missing them
@@ -308,7 +327,6 @@ class SongLibraryTab(QWidget):
         self.sync_details_btn.setToolTip(
             "Fetch prompt and lyrics from lalals.com for songs missing them"
         )
-        self.sync_details_btn.clicked.connect(self._start_detail_sync)
         queue_layout.addWidget(self.sync_details_btn)
 
         # Recover Downloads button — re-fetch songs that have task_ids but no files
@@ -318,14 +336,23 @@ class SongLibraryTab(QWidget):
         self.recover_btn.setToolTip(
             "Re-download songs that have task IDs but missing audio files"
         )
-        self.recover_btn.clicked.connect(self._recover_all_downloads)
         queue_layout.addWidget(self.recover_btn)
+
+        # Recover Error Songs button — find error songs on home page by title
+        self.recover_error_btn = QPushButton("Recover Error Songs")
+        self.recover_error_btn.setObjectName("recoverErrorBtn")
+        self.recover_error_btn.setFixedHeight(30)
+        self.recover_error_btn.setToolTip(
+            "Find songs in 'error' status on the lalals.com home page\n"
+            "and download them by title (headless browser)"
+        )
+        queue_layout.addWidget(self.recover_error_btn)
 
         # Status label
         self.queue_status_label = QLabel("Status: Idle")
         self.queue_status_label.setObjectName("queueStatusLabel")
         self.queue_status_label.setStyleSheet(
-            f"color: {_TEXT}; font-size: 12px;"
+            f"color: {Theme.TEXT}; font-size: 12px;"
         )
         self.queue_status_label.setMinimumWidth(200)
         queue_layout.addWidget(self.queue_status_label, stretch=1)
@@ -341,6 +368,63 @@ class SongLibraryTab(QWidget):
         queue_layout.addWidget(self.queue_progress)
 
         parent_layout.addWidget(self.queue_frame)
+
+    # ------------------------------------------------------------------
+    # Signal wiring (called by BaseTab.__init__ after _init_ui)
+    # ------------------------------------------------------------------
+
+    def _connect_signals(self):
+        """Connect all widget signals to their slots."""
+        # Search / filter bar
+        self._search_timer.timeout.connect(self.apply_filters)
+        self.search_box.textChanged.connect(self._on_search_text_changed)
+        self.genre_filter.currentIndexChanged.connect(self.apply_filters)
+        self.status_filter.currentIndexChanged.connect(self.apply_filters)
+        self.refresh_library_btn.clicked.connect(self.load_songs)
+
+        # Song table
+        self.table.itemSelectionChanged.connect(self.on_row_selected)
+        self.table.itemSelectionChanged.connect(self._update_batch_bar)
+        self.table.customContextMenuRequested.connect(self._show_table_context_menu)
+
+        # Queue panel buttons
+        self.login_btn.clicked.connect(self._open_login_browser)
+        self.process_queue_btn.clicked.connect(self._start_queue_processing)
+        self.stop_queue_btn.clicked.connect(self._stop_queue_processing)
+        self.refresh_btn.clicked.connect(self._on_refresh_clicked)
+        self.sync_btn.clicked.connect(self._open_import_history)
+        self.sync_details_btn.clicked.connect(self._start_detail_sync)
+        self.recover_btn.clicked.connect(self._recover_all_downloads)
+        self.recover_error_btn.clicked.connect(self._recover_error_songs)
+
+        # Detail area buttons
+        self.save_btn.clicked.connect(self.save_changes)
+        self.requeue_btn.clicked.connect(self.requeue_song)
+        self.process_this_btn.clicked.connect(self._process_single_song)
+        self.copy_prompt_btn.clicked.connect(self._copy_prompt)
+        self.copy_lyrics_btn.clicked.connect(self._copy_lyrics)
+        self.delete_btn.clicked.connect(self.delete_song)
+
+        # Cross-tab event bus
+        event_bus.songs_changed.connect(self.load_songs)
+
+    # ------------------------------------------------------------------
+    # BaseTab lifecycle overrides
+    # ------------------------------------------------------------------
+
+    def refresh(self):
+        """Reload song data from the database."""
+        self.load_songs()
+
+    def cleanup(self):
+        """Stop running workers and release resources."""
+        super().cleanup()
+        # Stop the search debounce timer
+        self._search_timer.stop()
+        # Stop detail syncer if running
+        if self._detail_syncer is not None and self._detail_syncer.isRunning():
+            self._detail_syncer.requestInterruption()
+            self._detail_syncer.wait(3000)
 
     # ------------------------------------------------------------------
     # Login
@@ -365,11 +449,12 @@ class SongLibraryTab(QWidget):
             from pathlib import Path
             from playwright.sync_api import sync_playwright
 
-            profile_dir = str(Path.home() / ".songfactory" / "browser_profile")
+            from automation.browser_profiles import get_profile_path
+            profile_dir = get_profile_path("lalals")
             pw = sync_playwright().start()
 
             launch_args = {
-                'headless': False,
+                'headless': True,  # Always headless — prevents user from closing browser
                 'accept_downloads': True,
                 'viewport': {'width': 1280, 'height': 900},
                 'args': ['--disable-blink-features=AutomationControlled'],
@@ -509,6 +594,8 @@ class SongLibraryTab(QWidget):
             self._worker.login_required.connect(self._on_login_required)
             self._worker.awaiting_refresh.connect(self._on_awaiting_refresh)
 
+        self.register_worker(self._worker)
+
         # Update UI state
         self.process_queue_btn.setEnabled(False)
         self.stop_queue_btn.setEnabled(True)
@@ -633,6 +720,8 @@ class SongLibraryTab(QWidget):
             self._worker.login_required.connect(self._on_login_required)
             self._worker.awaiting_refresh.connect(self._on_awaiting_refresh)
 
+        self.register_worker(self._worker)
+
         # Update UI state
         self.process_queue_btn.setEnabled(False)
         self.stop_queue_btn.setEnabled(True)
@@ -694,6 +783,7 @@ class SongLibraryTab(QWidget):
 
         db_path = os.path.expanduser("~/.songfactory/songfactory.db")
         self._detail_syncer = SongDetailSyncer(db_path, config, song_ids=song_ids)
+        self.register_worker(self._detail_syncer)
         self._detail_syncer.progress.connect(self._on_detail_sync_progress)
         self._detail_syncer.song_synced.connect(self._on_detail_song_synced)
         self._detail_syncer.finished.connect(self._on_detail_sync_finished)
@@ -800,10 +890,10 @@ class SongLibraryTab(QWidget):
 
         menu = QMenu(self)
         menu.setStyleSheet(
-            f"QMenu {{ background-color: {_BG_PANEL}; color: {_TEXT}; "
+            f"QMenu {{ background-color: {Theme.PANEL}; color: {Theme.TEXT}; "
             f"border: 1px solid #555555; padding: 4px; }}"
             f"QMenu::item {{ padding: 6px 20px; }}"
-            f"QMenu::item:selected {{ background-color: {_ACCENT}; color: #000000; }}"
+            f"QMenu::item:selected {{ background-color: {Theme.ACCENT}; color: #000000; }}"
         )
 
         # Queue for Processing
@@ -830,8 +920,13 @@ class SongLibraryTab(QWidget):
             )
             menu.addAction(sync_detail_action)
         else:
-            recover_action = QAction("Recover Download (needs Sync History first)", self)
-            recover_action.setEnabled(False)
+            recover_action = QAction("Recover from Home Page", self)
+            recover_action.setToolTip(
+                "Download this song from the lalals.com home page by title"
+            )
+            recover_action.triggered.connect(
+                lambda checked, sid=song_id, t=title: self._recover_from_home(sid, t)
+            )
             menu.addAction(recover_action)
 
         # Add to CD Project submenu
@@ -839,10 +934,10 @@ class SongLibraryTab(QWidget):
         if cd_projects:
             cd_menu = QMenu("Add to CD Project", self)
             cd_menu.setStyleSheet(
-                f"QMenu {{ background-color: {_BG_PANEL}; color: {_TEXT}; "
+                f"QMenu {{ background-color: {Theme.PANEL}; color: {Theme.TEXT}; "
                 f"border: 1px solid #555555; padding: 4px; }}"
                 f"QMenu::item {{ padding: 6px 20px; }}"
-                f"QMenu::item:selected {{ background-color: {_ACCENT}; color: #000000; }}"
+                f"QMenu::item:selected {{ background-color: {Theme.ACCENT}; color: #000000; }}"
             )
             for proj in cd_projects:
                 proj_name = proj.get("name", "Untitled")
@@ -1072,16 +1167,16 @@ class SongLibraryTab(QWidget):
         QApplication.processEvents()
 
         try:
-            from pathlib import Path as _Path
             from playwright.sync_api import sync_playwright
             from automation.lalals_driver import LalalsDriver
             from automation.download_manager import DownloadManager
+            from automation.browser_profiles import get_profile_path
 
-            profile_dir = str(_Path.home() / ".songfactory" / "browser_profile")
+            profile_dir = get_profile_path("lalals")
             pw = sync_playwright().start()
 
             launch_args = {
-                'headless': False,
+                'headless': True,  # Always headless — prevents user from closing browser
                 'accept_downloads': True,
                 'viewport': {'width': 1280, 'height': 900},
                 'args': ['--disable-blink-features=AutomationControlled'],
@@ -1301,6 +1396,249 @@ class SongLibraryTab(QWidget):
         self.load_songs()
 
     # ------------------------------------------------------------------
+    # Recover error songs (no task_id) via home page
+    # ------------------------------------------------------------------
+
+    def _recover_from_home(self, song_id: int, title: str):
+        """Recover a single song by downloading from lalals.com home page.
+
+        Used when no task_id was captured (browser closed, API capture failed).
+        Opens a headless browser, navigates to home page, finds the song by
+        title/prompt/lyrics text matching.
+        """
+        self.queue_status_label.setText(f"Status: Recovering '{title}' from home page...")
+        QApplication.processEvents()
+
+        # Fetch song prompt and lyrics for better matching
+        song_row = self.db.get_song(song_id) if hasattr(self.db, 'get_song') else None
+        prompt = ""
+        lyrics = ""
+        if song_row:
+            prompt = song_row.get("prompt", "") or ""
+            lyrics = song_row.get("lyrics", "") or ""
+
+        try:
+            from playwright.sync_api import sync_playwright
+            from automation.lalals_driver import LalalsDriver
+            from automation.browser_profiles import get_profile_path
+
+            download_dir = self.db.get_config(
+                "download_dir",
+                str(os.path.join(os.path.expanduser("~"), "Music", "SongFactory")),
+            )
+
+            profile_dir = get_profile_path("lalals")
+            pw = sync_playwright().start()
+
+            launch_args = {
+                'headless': True,
+                'accept_downloads': True,
+                'viewport': {'width': 1280, 'height': 900},
+                'args': ['--disable-blink-features=AutomationControlled'],
+            }
+
+            try:
+                ctx = pw.chromium.launch_persistent_context(
+                    profile_dir, channel='chrome', **launch_args
+                )
+            except Exception:
+                ctx = pw.chromium.launch_persistent_context(
+                    profile_dir, **launch_args
+                )
+
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            driver = LalalsDriver(page, ctx)
+
+            # Check login
+            if not driver.is_logged_in():
+                ctx.close()
+                pw.stop()
+                self.queue_status_label.setText("Status: Not logged in to lalals.com")
+                QMessageBox.warning(
+                    self, "Login Required",
+                    "You need to be logged in to lalals.com to recover songs.\n\n"
+                    "Use the 'Login to Lalals' button first.",
+                )
+                return
+
+            # Go to home page and download by title/prompt/lyrics
+            driver.go_to_home_page()
+            page.wait_for_timeout(3000)
+            paths = driver.download_from_home(
+                title, download_dir, prompt=prompt, lyrics=lyrics,
+            )
+
+            # Capture a screenshot for debugging regardless of outcome
+            driver._capture_debug_screenshot(f"recover_{song_id}")
+
+            ctx.close()
+            pw.stop()
+
+            if paths:
+                update_kwargs = {"status": "completed"}
+                if len(paths) >= 1:
+                    update_kwargs["file_path_1"] = str(paths[0])
+                if len(paths) >= 2:
+                    update_kwargs["file_path_2"] = str(paths[1])
+                self.db.update_song(song_id, **update_kwargs)
+                self.queue_status_label.setText(
+                    f"Status: Recovered '{title}' — {len(paths)} file(s)"
+                )
+                self.load_songs()
+            else:
+                self.queue_status_label.setText(
+                    f"Status: Could not find '{title}' on home page"
+                )
+                QMessageBox.warning(
+                    self, "Recovery Failed",
+                    f"Could not find '{title}' on the lalals.com home page.\n\n"
+                    "The song may not be on the first page of results, "
+                    "or the title may not match exactly.",
+                )
+
+        except Exception as e:
+            self.queue_status_label.setText("Status: Recovery failed")
+            QMessageBox.warning(
+                self, "Recovery Error", f"Error during home page recovery:\n\n{e}"
+            )
+
+    def _recover_error_songs(self):
+        """Batch recover all songs in 'error' status via home page download.
+
+        Launches a single headless browser session and tries to find each
+        error song on the lalals.com home page by title.
+        """
+        error_songs = [
+            s for s in self.all_songs
+            if s.get("status") == "error"
+        ]
+
+        if not error_songs:
+            QMessageBox.information(
+                self, "No Error Songs",
+                "No songs in 'error' status to recover.",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Recover Error Songs",
+            f"Found {len(error_songs)} song(s) in error status.\n\n"
+            "This will open a headless browser and try to download\n"
+            "each song from the lalals.com home page by title.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.recover_error_btn.setEnabled(False)
+        self.queue_progress.setVisible(True)
+        self.queue_progress.setRange(0, len(error_songs))
+
+        try:
+            from playwright.sync_api import sync_playwright
+            from automation.lalals_driver import LalalsDriver
+            from automation.browser_profiles import get_profile_path
+
+            download_dir = self.db.get_config(
+                "download_dir",
+                str(os.path.join(os.path.expanduser("~"), "Music", "SongFactory")),
+            )
+
+            profile_dir = get_profile_path("lalals")
+            pw = sync_playwright().start()
+
+            launch_args = {
+                'headless': True,
+                'accept_downloads': True,
+                'viewport': {'width': 1280, 'height': 900},
+                'args': ['--disable-blink-features=AutomationControlled'],
+            }
+
+            try:
+                ctx = pw.chromium.launch_persistent_context(
+                    profile_dir, channel='chrome', **launch_args
+                )
+            except Exception:
+                ctx = pw.chromium.launch_persistent_context(
+                    profile_dir, **launch_args
+                )
+
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            driver = LalalsDriver(page, ctx)
+
+            if not driver.is_logged_in():
+                ctx.close()
+                pw.stop()
+                self.recover_error_btn.setEnabled(True)
+                self.queue_progress.setVisible(False)
+                self.queue_status_label.setText("Status: Not logged in")
+                QMessageBox.warning(
+                    self, "Login Required",
+                    "You need to be logged in to lalals.com.\n"
+                    "Use 'Login to Lalals' first.",
+                )
+                return
+
+            success_count = 0
+            fail_count = 0
+
+            for i, song in enumerate(error_songs):
+                song_id = song["id"]
+                title = song.get("title", "Untitled")
+                prompt = song.get("prompt", "") or ""
+                lyrics = song.get("lyrics", "") or ""
+
+                self.queue_status_label.setText(
+                    f"Recovering: {title} ({i + 1}/{len(error_songs)})"
+                )
+                self.queue_progress.setValue(i)
+                QApplication.processEvents()
+
+                try:
+                    driver.go_to_home_page()
+                    page.wait_for_timeout(3000)
+                    paths = driver.download_from_home(
+                        title, download_dir, prompt=prompt, lyrics=lyrics,
+                    )
+
+                    if paths:
+                        update_kwargs = {"status": "completed"}
+                        if len(paths) >= 1:
+                            update_kwargs["file_path_1"] = str(paths[0])
+                        if len(paths) >= 2:
+                            update_kwargs["file_path_2"] = str(paths[1])
+                        self.db.update_song(song_id, **update_kwargs)
+                        success_count += 1
+                    else:
+                        fail_count += 1
+                except Exception:
+                    fail_count += 1
+
+            driver._capture_debug_screenshot("recover_error_batch")
+            ctx.close()
+            pw.stop()
+
+            self.queue_progress.setValue(len(error_songs))
+            msg = f"Recovery complete: {success_count} recovered"
+            if fail_count:
+                msg += f", {fail_count} not found on home page"
+            self.queue_status_label.setText(f"Status: {msg}")
+            QMessageBox.information(self, "Recovery Complete", msg)
+
+        except Exception as e:
+            self.queue_status_label.setText("Status: Recovery failed")
+            QMessageBox.warning(
+                self, "Recovery Error", f"Error during batch recovery:\n\n{e}"
+            )
+
+        self.recover_error_btn.setEnabled(True)
+        self.queue_progress.setVisible(False)
+        self.load_songs()
+
+    # ------------------------------------------------------------------
     # Stylesheet
     # ------------------------------------------------------------------
 
@@ -1308,46 +1646,46 @@ class SongLibraryTab(QWidget):
         """Apply the dark theme stylesheet to the entire tab."""
         self.setStyleSheet(f"""
             SongLibraryTab {{
-                background-color: {_BG_MAIN};
+                background-color: {Theme.BG};
             }}
 
             QLineEdit {{
-                background-color: {_BG_PANEL};
-                color: {_TEXT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 padding: 6px 10px;
                 font-size: 13px;
             }}
             QLineEdit:focus {{
-                border: 1px solid {_ACCENT};
+                border: 1px solid {Theme.ACCENT};
             }}
 
             QComboBox {{
-                background-color: {_BG_PANEL};
-                color: {_TEXT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 padding: 5px 10px;
                 font-size: 13px;
             }}
             QComboBox:focus {{
-                border: 1px solid {_ACCENT};
+                border: 1px solid {Theme.ACCENT};
             }}
             QComboBox::drop-down {{
                 border: none;
             }}
             QComboBox QAbstractItemView {{
-                background-color: {_BG_PANEL};
-                color: {_TEXT};
-                selection-background-color: {_ACCENT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
+                selection-background-color: {Theme.ACCENT};
                 selection-color: #000000;
             }}
 
             QTableWidget {{
-                background-color: {_BG_MAIN};
-                alternate-background-color: {_ROW_ODD};
-                color: {_TEXT};
+                background-color: {Theme.BG};
+                alternate-background-color: {Theme.ROW_ODD};
+                color: {Theme.TEXT};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 gridline-color: transparent;
@@ -1357,46 +1695,46 @@ class SongLibraryTab(QWidget):
                 padding: 6px 8px;
             }}
             QTableWidget::item:selected {{
-                background-color: {_ACCENT};
+                background-color: {Theme.ACCENT};
                 color: #000000;
             }}
             QHeaderView::section {{
-                background-color: {_BG_PANEL};
-                color: {_TEXT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
                 border: none;
-                border-bottom: 2px solid {_ACCENT};
+                border-bottom: 2px solid {Theme.ACCENT};
                 padding: 6px 8px;
                 font-weight: bold;
                 font-size: 12px;
             }}
 
             QFrame#detailFrame {{
-                background-color: {_BG_PANEL};
+                background-color: {Theme.PANEL};
                 border: 1px solid #555555;
                 border-radius: 6px;
             }}
 
             QFrame#queueFrame {{
-                background-color: {_BG_PANEL};
+                background-color: {Theme.PANEL};
                 border: 1px solid #555555;
                 border-radius: 6px;
             }}
 
             QTextEdit {{
-                background-color: {_BG_MAIN};
-                color: {_TEXT};
+                background-color: {Theme.BG};
+                color: {Theme.TEXT};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 padding: 6px;
                 font-size: 12px;
             }}
             QTextEdit:focus {{
-                border: 1px solid {_ACCENT};
+                border: 1px solid {Theme.ACCENT};
             }}
 
             QPushButton {{
-                background-color: {_BG_PANEL};
-                color: {_TEXT};
+                background-color: {Theme.PANEL};
+                color: {Theme.TEXT};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 padding: 6px 16px;
@@ -1405,10 +1743,10 @@ class SongLibraryTab(QWidget):
             }}
             QPushButton:hover {{
                 background-color: #444444;
-                border-color: {_ACCENT};
+                border-color: {Theme.ACCENT};
             }}
             QPushButton:pressed {{
-                background-color: {_ACCENT};
+                background-color: {Theme.ACCENT};
                 color: #000000;
             }}
             QPushButton:disabled {{
@@ -1445,7 +1783,7 @@ class SongLibraryTab(QWidget):
             }}
 
             QPushButton#processQueueBtn {{
-                background-color: {_ACCENT};
+                background-color: {Theme.ACCENT};
                 color: #000000;
                 border: none;
                 font-weight: bold;
@@ -1509,7 +1847,7 @@ class SongLibraryTab(QWidget):
             }}
 
             QPushButton#processThisBtn {{
-                background-color: {_ACCENT};
+                background-color: {Theme.ACCENT};
                 color: #000000;
                 border: none;
                 font-weight: bold;
@@ -1519,20 +1857,20 @@ class SongLibraryTab(QWidget):
             }}
 
             QProgressBar#queueProgressBar {{
-                background-color: {_BG_MAIN};
+                background-color: {Theme.BG};
                 border: 1px solid #555555;
                 border-radius: 4px;
                 text-align: center;
-                color: {_TEXT};
+                color: {Theme.TEXT};
                 font-size: 10px;
             }}
             QProgressBar#queueProgressBar::chunk {{
-                background-color: {_ACCENT};
+                background-color: {Theme.ACCENT};
                 border-radius: 3px;
             }}
 
             QLabel {{
-                color: {_TEXT};
+                color: {Theme.TEXT};
             }}
         """)
 
@@ -1743,7 +2081,7 @@ class SongLibraryTab(QWidget):
             view_btn = QPushButton("View")
             view_btn.setFixedSize(46, 24)
             view_btn.setStyleSheet(
-                f"font-size: 11px; padding: 2px 6px; background-color: {_ACCENT};"
+                f"font-size: 11px; padding: 2px 6px; background-color: {Theme.ACCENT};"
                 "color: #000000; border: none; border-radius: 3px; font-weight: bold;"
             )
             view_btn.clicked.connect(lambda checked, r=row_idx: self._select_row(r))
@@ -1907,6 +2245,121 @@ class SongLibraryTab(QWidget):
         clipboard = QApplication.clipboard()
         if clipboard:
             clipboard.setText(text)
+
+    # ------------------------------------------------------------------
+    # Batch operations
+    # ------------------------------------------------------------------
+
+    def _get_selected_song_ids(self) -> list[int]:
+        """Return song IDs for all selected table rows."""
+        selected_rows = set()
+        for index in self.table.selectionModel().selectedRows():
+            selected_rows.add(index.row())
+
+        song_ids = []
+        for row in sorted(selected_rows):
+            if 0 <= row < len(self.filtered_songs):
+                song_id = self.filtered_songs[row].get("id")
+                if song_id is not None:
+                    song_ids.append(song_id)
+        return song_ids
+
+    def _update_batch_bar(self):
+        """Show/hide batch action buttons based on selection count."""
+        ids = self._get_selected_song_ids()
+        count = len(ids)
+        show_batch = count > 1
+
+        self.batch_delete_btn.setVisible(show_batch)
+        self.batch_status_btn.setVisible(show_batch)
+        self.batch_export_btn.setVisible(show_batch)
+        self.batch_selection_label.setVisible(show_batch)
+
+        if show_batch:
+            self.batch_selection_label.setText(f"{count} songs selected")
+
+    def _batch_delete(self):
+        """Delete all selected songs after confirmation."""
+        ids = self._get_selected_song_ids()
+        if not ids:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Batch Delete",
+            f"Are you sure you want to delete {len(ids)} selected song(s)?\n\n"
+            "This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        deleted = 0
+        for song_id in ids:
+            if self.db.delete_song(song_id):
+                deleted += 1
+
+        QMessageBox.information(
+            self, "Batch Delete", f"Deleted {deleted} of {len(ids)} songs."
+        )
+        self.selected_song = None
+        self.detail_frame.setVisible(False)
+        self.load_songs()
+
+    def _batch_set_status(self):
+        """Set status for all selected songs."""
+        ids = self._get_selected_song_ids()
+        if not ids:
+            return
+
+        from PyQt6.QtWidgets import QInputDialog
+        statuses = ["draft", "queued", "completed", "error"]
+        status, ok = QInputDialog.getItem(
+            self,
+            "Set Status",
+            f"Choose status for {len(ids)} selected song(s):",
+            statuses,
+            0,
+            False,
+        )
+        if not ok:
+            return
+
+        updated = 0
+        for song_id in ids:
+            if self.db.update_song(song_id, status=status):
+                updated += 1
+
+        QMessageBox.information(
+            self, "Batch Status", f"Updated {updated} of {len(ids)} songs to '{status}'."
+        )
+        self.load_songs()
+
+    def _batch_export(self):
+        """Export selected songs to a JSON file."""
+        ids = self._get_selected_song_ids()
+        if not ids:
+            return
+
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Selected Songs",
+            os.path.expanduser("~/songs_export.json"),
+            "JSON Files (*.json)",
+        )
+        if not path:
+            return
+
+        try:
+            from export_import import export_json
+            export_json(self.db, path, songs=True, lore=False, genres=False, song_ids=ids)
+            QMessageBox.information(
+                self, "Export Complete", f"Exported {len(ids)} songs to:\n{path}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", f"Error: {e}")
 
     # ------------------------------------------------------------------
     # Helpers

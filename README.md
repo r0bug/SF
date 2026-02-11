@@ -8,10 +8,11 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 - **Lore Editor** — Manage world-building lore entries (people, places, events, themes, rules, general) with category filtering, bulk toggle controls, and saveable presets.
 - **Lore Discovery** — Search the web, summarize content with AI, and save results directly as lore entries.
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
-- **Song Library** — Browse, search, and filter songs by status. Includes browser automation queue for submitting songs to lalals.com and downloading results.
+- **Song Library** — Browse, search, and filter songs by status. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. Error recovery via headless home-page download.
 - **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and disc burning via cdrdao/wodim.
 - **Distribution** — Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation. Includes release form, genre mapping, cover art validation/resize, AI disclosure, and upload queue with login/2FA support.
-- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, DistroKid credentials, browser automation paths, Xvfb virtual display, network diagnostics, and database backup/restore.
+- **Analytics** — Song statistics, status breakdown charts, and generation history.
+- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, DistroKid credentials, browser automation paths, Xvfb virtual display, pipeline diagnostics, debug screenshots, and database backup/restore.
 
 ## Tech Stack
 
@@ -68,29 +69,50 @@ Database backups are stored as timestamped files (`songfactory_backup_YYYYMMDD_H
 ```
 songfactory/
   main.py                  # Entry point
-  app.py                   # MainWindow, dark theme, tab setup, seed logic
+  app.py                   # MainWindow, tab setup, seed logic
   database.py              # Database class — all CRUD, migrations, presets
   api_client.py            # SongGenerator — Anthropic API wrapper
   seed_data.py             # Default genres, lore, and sample songs
+  theme.py                 # Centralized colors/styles (Theme class)
+  event_bus.py             # DataEventBus singleton (cross-tab signals)
+  validators.py            # Input validation (song, genre, lore, distribution)
+  secure_config.py         # Keyring-backed credential storage with DB fallback
+  logging_config.py        # RotatingFileHandler (5MB, 3 backups)
+  timeouts.py              # Config-driven timeouts with DB override
+  ai_models.py             # Central model registry (DEFAULT_MODEL, get_model_choices)
+  export_import.py         # JSON/CSV export, JSON import with duplicate detection
   web_search.py            # DuckDuckGo web search integration
   lore_summarizer.py       # AI-powered content summarization for lore
   icon.svg                 # Application icon
   tabs/
+    base_tab.py            # BaseTab(QWidget) lifecycle: _init_ui, _connect_signals, refresh, cleanup
     creator.py             # Song Creator tab — grouped lore, presets, generation
     lore.py                # Lore Editor tab — bulk toggles, presets, auto-save
     lore_discovery.py      # Lore Discovery tab — web search + summarize
     genres.py              # Genre Manager tab — table + detail panel
-    library.py             # Song Library tab — search, filter, queue, automation
-    settings.py            # Settings tab — API keys, paths, diagnostics
+    library.py             # Song Library tab — search, filter, queue, automation, recovery
+    settings.py            # Settings tab — API keys, diagnostics, pipeline testing
     cd_master.py           # CD Master tab — projects, tracks, art, burning
     distribution.py        # Distribution tab — DistroKid upload queue & form
+    analytics.py           # Analytics tab — statistics and charts
     history_import_dialog.py  # Dialog for importing lalals.com history
     song_picker_dialog.py  # Dialog for selecting songs (CD track picker)
+  widgets/
+    status_badge.py        # StatusBadge colored label widget
+    search_bar.py          # SearchBar with filter controls
+    log_viewer.py          # LogViewer for automation logs
   automation/
+    base_worker.py         # BaseWorker(QThread) with stop flag, DB lifecycle
     browser_worker.py      # LalalsWorker QThread — submit/download pipeline
     lalals_driver.py       # Playwright browser driver for lalals.com
+    browser_profiles.py    # Centralized profile paths, cache clearing
+    selector_health.py     # CSS selector health checks for lalals.com
+    pipeline_diagnostics.py # 5-phase browser pipeline diagnostic worker
+    retry.py               # with_retry decorator, exponential backoff
+    atomic_io.py           # Atomic file write utilities
     distrokid_driver.py    # Playwright browser driver for distrokid.com
     distrokid_worker.py    # DistroKid upload QThread — login/2FA, form fill, upload
+    distributor_base.py    # DistributorPlugin ABC, DistroKidPlugin
     cover_art_preparer.py  # Cover art validation and resize for distribution
     download_manager.py    # File download utilities (Playwright + HTTP)
     api_worker.py          # MusicGPT API worker thread
@@ -105,6 +127,10 @@ songfactory/
     cd_burn_worker.py      # CD burning worker thread (cdrdao/wodim)
     data_session_builder.py # CD-Extra data session builder
     toc_generator.py       # CD TOC file generator
+  tests/
+    test_lalals_fixes.py   # Tests for browser integration bug fixes
+    test_pipeline_diagnostics.py # Tests for diagnostic tool
+tests/                     # Main test suite (202 tests)
 ```
 
 ## Database

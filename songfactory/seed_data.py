@@ -169,6 +169,20 @@ SEED_GENRES = [
         "bpm_range": "125-135",
         "active": True,
     },
+    {
+        "name": "Indie Rock",
+        "prompt_template": "Indie rock, jangly guitars, driving drums, warm bass, raw vocals, garage energy, lo-fi charm, anthemic chorus",
+        "description": "Jangly indie rock with raw vocals and garage energy.",
+        "bpm_range": "120-145",
+        "active": True,
+    },
+    {
+        "name": "Pop Rock",
+        "prompt_template": "Pop rock, power chords, tight drums, melodic vocals, singalong chorus, polished guitar tones, uplifting energy",
+        "description": "Polished pop rock with power chords and singalong choruses.",
+        "bpm_range": "115-140",
+        "active": True,
+    },
 ]
 
 # ---------------------------------------------------------------------------

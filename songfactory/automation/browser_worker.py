@@ -17,16 +17,8 @@ from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger("songfactory.automation")
 
-# Set up file logging
 LOG_DIR = Path.home() / ".songfactory"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE = LOG_DIR / "automation.log"
-
-file_handler = logging.FileHandler(LOG_FILE)
-file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-logger.addHandler(file_handler)
-logger.setLevel(logging.INFO)
-
 STATE_FILE = LOG_DIR / "browser_state.json"
 
 
@@ -147,10 +139,12 @@ class LalalsWorker(QThread):
         try:
             playwright = sync_playwright().start()
 
-            profile_dir = str(LOG_DIR / "browser_profile")
+            from automation.browser_profiles import get_profile_path
+            profile_dir = get_profile_path("lalals")
 
+            # Always headless — visible browser lets users close it mid-queue
             launch_args = {
-                'headless': False,
+                'headless': True,
                 'slow_mo': 100,
                 'accept_downloads': True,
                 'viewport': {'width': 1280, 'height': 900},
@@ -232,6 +226,21 @@ class LalalsWorker(QThread):
                 conn.commit()
 
                 try:
+                    # Check browser is still alive before each song
+                    try:
+                        _ = page.url
+                    except Exception:
+                        error_msg = "Browser was closed — cannot continue queue"
+                        logger.error(error_msg)
+                        conn.execute(
+                            "UPDATE songs SET status='error', notes=? WHERE id=?",
+                            (error_msg, song_id)
+                        )
+                        conn.commit()
+                        self.song_error.emit(song_id, error_msg)
+                        self.progress_update.emit(error_msg)
+                        break
+
                     # Check if still logged in before each song
                     if "/auth/" in page.url:
                         self.progress_update.emit(
@@ -299,37 +308,65 @@ class LalalsWorker(QThread):
                     )
                     logger.info(f"Refresh received for song {song_id}, downloading...")
 
+                    # Post-refresh delay: S3 files may still be propagating
+                    from timeouts import TIMEOUTS
+                    post_delay = TIMEOUTS.get("post_refresh_delay_s", 5)
+                    logger.info(f"Post-refresh delay: {post_delay}s")
+                    time.sleep(post_delay)
+
+                    from automation.retry import retry_call
+
                     file_path_1 = ""
                     file_path_2 = ""
                     metadata = {}
 
                     # Strategy 1: Use task_id to fetch fresh URLs via API
                     if task_id:
-                        try:
-                            metadata = driver.fetch_fresh_urls(
+                        def _strategy_1():
+                            nonlocal metadata
+                            m = driver.fetch_fresh_urls(
                                 task_id, auth_token, cid1, cid2
                             )
-                            if metadata:
-                                paths = driver.download_songs_v2(
-                                    metadata, download_dir, title
+                            if m:
+                                p = driver.download_songs_v2(
+                                    m, download_dir, title
                                 )
-                                if len(paths) >= 1:
-                                    file_path_1 = str(paths[0])
-                                if len(paths) >= 2:
-                                    file_path_2 = str(paths[1])
-                                logger.info(
-                                    f"API download: {len(paths)} file(s)"
-                                )
+                                return m, p
+                            return m, []
+
+                        try:
+                            metadata, paths = retry_call(
+                                _strategy_1,
+                                max_attempts=3,
+                                backoff_base=2,
+                            )
+                            if len(paths) >= 1:
+                                file_path_1 = str(paths[0])
+                            if len(paths) >= 2:
+                                file_path_2 = str(paths[1])
+                            logger.info(
+                                f"API download: {len(paths)} file(s)"
+                            )
                         except Exception as e:
                             logger.warning(f"API download failed: {e}")
 
                     # Strategy 2: Home page three-dot menu download
                     if not file_path_1:
-                        try:
-                            logger.info("Trying Home page download fallback...")
+                        def _strategy_2():
                             driver.go_to_home_page()
                             page.wait_for_timeout(3000)
-                            paths = driver.download_from_home(title, download_dir)
+                            return driver.download_from_home(
+                                title, download_dir,
+                                prompt=prompt, lyrics=lyrics,
+                            )
+
+                        try:
+                            logger.info("Trying Home page download fallback...")
+                            paths = retry_call(
+                                _strategy_2,
+                                max_attempts=2,
+                                backoff_base=3,
+                            )
                             if paths:
                                 file_path_1 = str(paths[0])
                                 logger.info(f"Home page download: {paths[0]}")
@@ -348,10 +385,17 @@ class LalalsWorker(QThread):
                             if c2:
                                 url_2 = f"https://lalals.s3.amazonaws.com/conversions/standard/{c2}/{c2}.mp3"
                         if url_2:
-                            try:
+                            def _strategy_3():
                                 from automation.download_manager import DownloadManager
-                                dm = DownloadManager(download_dir)
-                                p2 = dm.save_from_url(url_2, title, 2)
+                                dm2 = DownloadManager(download_dir)
+                                return dm2.save_from_url(url_2, title, 2)
+
+                            try:
+                                p2 = retry_call(
+                                    _strategy_3,
+                                    max_attempts=3,
+                                    backoff_base=2,
+                                )
                                 file_path_2 = str(p2)
                                 logger.info(f"Version 2 via URL: {p2}")
                             except Exception as e:
@@ -403,7 +447,11 @@ class LalalsWorker(QThread):
                         logger.warning(f"No files for: {title}")
 
                 except LalalsDriverError as e:
-                    error_msg = str(e)
+                    try:
+                        driver._capture_debug_screenshot(f"error_{song_id}")
+                    except Exception:
+                        pass
+                    error_msg = e.user_message if hasattr(e, 'user_message') else str(e)
                     logger.error(f"Error processing {title}: {error_msg}")
                     conn.execute(
                         "UPDATE songs SET status='error', notes=? WHERE id=?",
@@ -413,6 +461,10 @@ class LalalsWorker(QThread):
                     self.song_error.emit(song_id, error_msg)
 
                 except Exception as e:
+                    try:
+                        driver._capture_debug_screenshot(f"error_{song_id}")
+                    except Exception:
+                        pass
                     error_msg = f"Unexpected error: {e}"
                     logger.error(f"Error processing {title}: {error_msg}")
                     conn.execute(

@@ -93,11 +93,31 @@ Browse, search, and manage all songs with automation controls.
 - Expandable detail area for viewing/editing individual songs
 
 ### Automation Queue
-- **Browser Mode** — Playwright-based browser automation: submit songs to lalals.com, wait for processing, download results
+- **Browser Mode** — Playwright-based headless browser automation: submit songs to lalals.com, wait for processing, download results
 - **API Mode** — Direct submission via MusicGPT API with automatic polling and download
 - **Sync** — Import song details (prompt, lyrics, metadata) from lalals.com profile API
 - **History Import** — Discover and import previously generated songs from lalals.com account
-- Xvfb support for headless browser automation
+- Always headless — browser runs in background, cannot be interrupted by user interaction
+- Centralized browser profile at `~/.songfactory/profiles/lalals/` preserves login session
+- Retry with exponential backoff on download failures
+
+### Error Recovery
+- **Recover Error Songs** — Batch button that launches a headless browser, navigates to lalals.com home page, and downloads songs in error status by matching card titles
+- **Recover from Home Page** — Right-click context menu option for individual songs without task_ids
+- **Multi-strategy card matching** — Matches songs on the lalals.com home page by title, title prefix, prompt prefix, lyrics prefix, or word overlap (lalals generates its own song titles that may differ from the database)
+- **Refresh Library** button reloads the song list from the database
+- Cards identified via `div[data-name="ProjectItem"]` with hover-reveal three-dot menu
+
+### Download Strategies (Priority Order)
+1. **API download** — Use captured `task_id` to fetch fresh URLs from `api.musicgpt.com/api/public/v1/byId`, download from S3
+2. **Home page download** — Navigate to lalals.com home, find song card, click three-dot menu → Download → Full Song
+3. **Direct S3 URL** — Construct S3 URL from conversion IDs: `https://lalals.s3.amazonaws.com/conversions/standard/{cid}/{cid}.mp3`
+
+### API Capture
+- Response listener intercepts `devapi.lalals.com` and `musicgpt.com` responses after clicking Generate
+- Recursive extraction finds `task_id` nested in `data[].id` from `/user/{uid}/projects` endpoint
+- Polls every 500ms for up to 30 seconds (configurable via `timeouts.py`)
+- Debug screenshots saved to `~/.songfactory/screenshots/` on capture failure
 
 ### Song Statuses
 | Status | Description |
@@ -198,6 +218,23 @@ All 23 Song Factory genres are mapped to DistroKid's fixed genre list:
 
 ---
 
+## Analytics
+
+Song statistics and generation history.
+
+- Status breakdown with counts per status
+- Generation timeline and trends
+- Quick-access filters to Song Library by status
+
+---
+
+## Export / Import
+
+- **Export** — JSON or CSV export of selected songs (batch or individual)
+- **Import** — JSON import with duplicate detection based on title + lyrics hash
+
+---
+
 ## Settings
 
 ### API Settings
@@ -226,8 +263,21 @@ All 23 Song Factory genres are mapped to DistroKid's fixed genre list:
 - Xvfb virtual display toggle for headless browser operation
 
 ### Diagnostics
+- **Pipeline Diagnostic** — 5-phase test of the lalals.com browser pipeline: Browser Launch + Login, Form Elements, Form Fill, API Submit (opt-in, uses 1 credit), Download URLs. Per-phase pass/fail with StatusBadge indicators and full HTML report.
+- **Open Screenshots Folder** — Quick access to `~/.songfactory/screenshots/` (max 20, auto-rotated)
+- **Selector Health Checks** — Validates that lalals.com CSS selectors (prompt textarea, lyrics toggle, generate button, home page cards) still match the live site
 - Network sniffer (60-second browser traffic capture)
 - Log viewers for sniffer and automation logs
+
+### Error Categories
+Automation errors are categorized for actionable user messages:
+| Category | Description |
+|----------|-------------|
+| SELECTOR_NOT_FOUND | UI selectors no longer match the site |
+| SESSION_EXPIRED | Login session has expired |
+| API_TIMEOUT | Server too slow to respond |
+| DOWNLOAD_FAILED | Generated files could not be downloaded |
+| NETWORK_ERROR | Connection lost during processing |
 
 ### Backup & Restore
 - **Backup Now** — Creates a timestamped copy of the database in the download directory using SQLite's online backup API (safe while the app is running)

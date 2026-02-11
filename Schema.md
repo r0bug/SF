@@ -2,6 +2,12 @@
 
 Database: `~/.songfactory/songfactory.db` (SQLite, WAL journal mode, foreign keys ON)
 
+Schema version tracked via `PRAGMA user_version` (currently v4). Migrations run automatically on startup:
+- **v1** — Add metadata columns to songs table
+- **v2** — Add performance indexes
+- **v3** — Rebuild foreign keys
+- **v4** — Add artists table
+
 ---
 
 ## lore
@@ -201,3 +207,18 @@ Individual tracks within a CD project.
 | duration_seconds | REAL | 0 | Track duration in seconds |
 | pregap_seconds | REAL | 2.0 | Pregap before track (seconds) |
 | created_at | TIMESTAMP | CURRENT_TIMESTAMP | Creation time |
+
+---
+
+## artists
+
+Artist profiles for song attribution (added in schema v4).
+
+| Column | Type | Default | Description |
+|--------|------|---------|-------------|
+| id | INTEGER | PK AUTOINCREMENT | Unique identifier |
+| name | TEXT | NOT NULL UNIQUE | Artist name |
+| is_default | BOOLEAN | 0 | Whether this is the default artist |
+| created_at | TIMESTAMP | CURRENT_TIMESTAMP | Creation time |
+
+Default seed data: "Yakima Finds" with `is_default = 1`.

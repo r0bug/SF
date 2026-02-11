@@ -6,6 +6,8 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+from automation.atomic_io import atomic_write_fn
+
 logger = logging.getLogger("songfactory.automation")
 
 
@@ -79,6 +81,9 @@ class DownloadManager:
     def save_playwright_download(self, download, song_title: str, version: int) -> Path:
         """Save a Playwright download object to the proper location.
 
+        Uses atomic write: Playwright saves to a temp file first, then the
+        temp file is renamed to the target path so partial files never appear.
+
         Args:
             download: Playwright Download object
             song_title: The song title
@@ -95,7 +100,7 @@ class DownloadManager:
 
         target_path = self.get_file_path(song_title, version, extension)
         logger.info(f"Saving download to: {target_path}")
-        download.save_as(str(target_path))
+        atomic_write_fn(str(target_path), lambda tmp: download.save_as(tmp))
         return target_path
 
     def get_existing_files(self, song_title: str) -> list[Path]:
@@ -107,6 +112,9 @@ class DownloadManager:
 
     def save_from_url(self, url: str, song_title: str, version: int) -> Path:
         """Download audio directly from a URL (S3/CloudFront) without browser.
+
+        Uses atomic write: urlretrieve streams to a temp file first, then
+        the temp file is renamed to the target path.
 
         Args:
             url: Direct audio file URL.
@@ -132,7 +140,10 @@ class DownloadManager:
         logger.info(f"  URL: {url[:120]}...")
 
         try:
-            urllib.request.urlretrieve(url, str(target_path))
+            atomic_write_fn(
+                str(target_path),
+                lambda tmp: urllib.request.urlretrieve(url, tmp),
+            )
             file_size = target_path.stat().st_size
             logger.info(f"  Downloaded {file_size:,} bytes")
         except urllib.error.URLError as e:
@@ -143,6 +154,9 @@ class DownloadManager:
 
     def save_playwright_download_track(self, download, song_title: str, track_type: str) -> Path:
         """Save a Playwright download object with a track-type suffix.
+
+        Uses atomic write: Playwright saves to a temp file first, then the
+        temp file is renamed to the target path.
 
         Args:
             download: Playwright Download object
@@ -159,11 +173,14 @@ class DownloadManager:
 
         target_path = self.get_track_file_path(song_title, track_type, extension)
         logger.info(f"Saving {track_type} download to: {target_path}")
-        download.save_as(str(target_path))
+        atomic_write_fn(str(target_path), lambda tmp: download.save_as(tmp))
         return target_path
 
     def save_from_url_track(self, url: str, song_title: str, track_type: str) -> Path:
         """Download audio from a URL and save with a track-type suffix.
+
+        Uses atomic write: urlretrieve streams to a temp file first, then
+        the temp file is renamed to the target path.
 
         Args:
             url: Direct audio file URL.
@@ -188,7 +205,10 @@ class DownloadManager:
         logger.info(f"  URL: {url[:120]}...")
 
         try:
-            urllib.request.urlretrieve(url, str(target_path))
+            atomic_write_fn(
+                str(target_path),
+                lambda tmp: urllib.request.urlretrieve(url, tmp),
+            )
             file_size = target_path.stat().st_size
             logger.info(f"  Downloaded {file_size:,} bytes")
         except urllib.error.URLError as e:

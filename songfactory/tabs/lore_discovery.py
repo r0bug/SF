@@ -25,74 +25,63 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 
+from tabs.base_tab import BaseTab
 from web_search import search, fetch_content, WebSearchError, SearchResult
 from lore_summarizer import LoreSummarizer
-
-
-# ---------------------------------------------------------------------------
-# Style constants (dark theme — matches existing tabs)
-# ---------------------------------------------------------------------------
-
-_BG = "#2b2b2b"
-_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
-_DIMMED = "#808080"
-_GREEN = "#4CAF50"
-_RED = "#F44336"
+from theme import Theme
 
 _CATEGORIES = ["people", "places", "events", "themes", "rules"]
 
 _STYLESHEET = f"""
     QWidget {{
-        background-color: {_BG};
-        color: {_TEXT};
+        background-color: {Theme.BG};
+        color: {Theme.TEXT};
     }}
     QSplitter::handle {{
         background-color: #454545;
         width: 3px;
     }}
     QLineEdit {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         border: 1px solid #555555;
         border-radius: 4px;
         padding: 6px 8px;
-        color: {_TEXT};
+        color: {Theme.TEXT};
         font-size: 14px;
     }}
     QLineEdit:focus {{
-        border-color: {_ACCENT};
+        border-color: {Theme.ACCENT};
     }}
     QComboBox {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         border: 1px solid #555555;
         border-radius: 4px;
         padding: 5px 8px;
-        color: {_TEXT};
+        color: {Theme.TEXT};
         min-height: 24px;
     }}
     QComboBox::drop-down {{
         border: none;
     }}
     QComboBox QAbstractItemView {{
-        background-color: {_PANEL};
-        color: {_TEXT};
-        selection-background-color: {_ACCENT};
+        background-color: {Theme.PANEL};
+        color: {Theme.TEXT};
+        selection-background-color: {Theme.ACCENT};
         selection-color: #1e1e1e;
     }}
     QTextEdit {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         border: 1px solid #555555;
         border-radius: 4px;
         padding: 6px;
-        color: {_TEXT};
+        color: {Theme.TEXT};
         font-size: 13px;
     }}
     QTextEdit:focus {{
-        border-color: {_ACCENT};
+        border-color: {Theme.ACCENT};
     }}
     QCheckBox {{
-        color: {_TEXT};
+        color: {Theme.TEXT};
         spacing: 8px;
         font-size: 13px;
     }}
@@ -101,14 +90,14 @@ _STYLESHEET = f"""
         height: 16px;
         border: 1px solid #555555;
         border-radius: 3px;
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
     }}
     QCheckBox::indicator:checked {{
-        background-color: {_ACCENT};
-        border-color: {_ACCENT};
+        background-color: {Theme.ACCENT};
+        border-color: {Theme.ACCENT};
     }}
     QPushButton {{
-        background-color: {_ACCENT};
+        background-color: {Theme.ACCENT};
         color: #1e1e1e;
         border: none;
         border-radius: 4px;
@@ -129,34 +118,34 @@ _STYLESHEET = f"""
     }}
     QPushButton#secondaryBtn {{
         background-color: #454545;
-        color: {_TEXT};
+        color: {Theme.TEXT};
         border: 1px solid #555555;
     }}
     QPushButton#secondaryBtn:hover {{
         background-color: #555555;
-        border-color: {_ACCENT};
+        border-color: {Theme.ACCENT};
     }}
     QPushButton#secondaryBtn:disabled {{
         background-color: #3a3a3a;
         color: #666666;
     }}
     QLabel {{
-        color: {_TEXT};
+        color: {Theme.TEXT};
         font-size: 12px;
     }}
     QLabel#sectionLabel {{
         font-weight: bold;
         font-size: 13px;
-        color: {_ACCENT};
+        color: {Theme.ACCENT};
     }}
     QLabel#statusLabel {{
-        color: {_DIMMED};
+        color: {Theme.DIMMED};
         font-size: 12px;
     }}
     QScrollArea {{
         border: 1px solid #555555;
         border-radius: 4px;
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
     }}
 """
 
@@ -251,7 +240,7 @@ class SummaryCard(QFrame):
         self.summary = summary
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setStyleSheet(
-            f"QFrame {{ background-color: {_PANEL}; border: 1px solid #555555; "
+            f"QFrame {{ background-color: {Theme.PANEL}; border: 1px solid #555555; "
             f"border-radius: 6px; padding: 8px; }}"
         )
         self._build_ui()
@@ -300,7 +289,7 @@ class SummaryCard(QFrame):
         source_url = self.summary.get("source_url", "")
         if source_url:
             src_label = QLabel(f"Source: {source_url}")
-            src_label.setStyleSheet(f"color: {_DIMMED}; font-size: 11px;")
+            src_label.setStyleSheet(f"color: {Theme.DIMMED}; font-size: 11px;")
             src_label.setWordWrap(True)
             layout.addWidget(src_label)
 
@@ -347,13 +336,13 @@ class SearchResultRow(QFrame):
 
         snippet = QLabel(self.result.snippet[:200])
         snippet.setWordWrap(True)
-        snippet.setStyleSheet(f"color: {_TEXT}; font-size: 12px; padding-left: 26px;")
+        snippet.setStyleSheet(f"color: {Theme.TEXT}; font-size: 12px; padding-left: 26px;")
         layout.addWidget(snippet)
 
         url_label = QLabel(self.result.url)
         url_label.setWordWrap(True)
         url_label.setStyleSheet(
-            f"color: {_DIMMED}; font-size: 11px; padding-left: 26px;"
+            f"color: {Theme.DIMMED}; font-size: 11px; padding-left: 26px;"
         )
         layout.addWidget(url_label)
 
@@ -362,27 +351,23 @@ class SearchResultRow(QFrame):
 # LoreDiscoveryTab
 # ===================================================================
 
-class LoreDiscoveryTab(QWidget):
+class LoreDiscoveryTab(BaseTab):
     """Web research tab for discovering and importing lore."""
 
     def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
         self._search_worker = None
         self._summarize_worker = None
         self._result_rows: list[SearchResultRow] = []
         self._summary_cards: list[SummaryCard] = []
         self._search_results: list[SearchResult] = []
-
-        self.setStyleSheet(_STYLESHEET)
-        self._build_ui()
-        self._connect_signals()
+        super().__init__(db, parent)
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
-    def _build_ui(self):
+    def _init_ui(self):
+        self.setStyleSheet(_STYLESHEET)
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
@@ -506,6 +491,16 @@ class LoreDiscoveryTab(QWidget):
         self.add_all_btn.clicked.connect(self._add_all_to_lore)
 
     # ------------------------------------------------------------------
+    # Refresh
+    # ------------------------------------------------------------------
+
+    def refresh(self) -> None:
+        """Clear stale UI state so the tab is ready for a fresh search."""
+        self._clear_results()
+        self._clear_summaries()
+        self.status_label.setText("Status: Idle")
+
+    # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
 
@@ -523,6 +518,7 @@ class LoreDiscoveryTab(QWidget):
         self._clear_results()
 
         self._search_worker = SearchWorker(query, parent=self)
+        self.register_worker(self._search_worker)
         self._search_worker.results_ready.connect(self._on_search_results)
         self._search_worker.error.connect(self._on_search_error)
         self._search_worker.start()
@@ -618,6 +614,7 @@ class LoreDiscoveryTab(QWidget):
             category=category,
             parent=self,
         )
+        self.register_worker(self._summarize_worker)
         self._summarize_worker.progress.connect(self._on_summarize_progress)
         self._summarize_worker.item_complete.connect(self._on_item_complete)
         self._summarize_worker.item_error.connect(self._on_item_error)
@@ -651,7 +648,7 @@ class LoreDiscoveryTab(QWidget):
 
         err_label = QLabel(f"Failed to summarize \"{title}\": {error_msg}")
         err_label.setWordWrap(True)
-        err_label.setStyleSheet(f"color: {_RED}; font-size: 12px; padding: 8px;")
+        err_label.setStyleSheet(f"color: {Theme.ERROR}; font-size: 12px; padding: 8px;")
         self._summary_layout.addWidget(err_label)
         self._summary_layout.addStretch()
 

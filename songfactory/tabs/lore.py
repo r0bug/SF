@@ -26,32 +26,27 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
 
-
-# ---------------------------------------------------------------------------
-# Style constants
-# ---------------------------------------------------------------------------
-_BG = "#2b2b2b"
-_PANEL = "#353535"
-_TEXT = "#e0e0e0"
-_ACCENT = "#E8A838"
-_DIMMED = "#808080"
+from tabs.base_tab import BaseTab
+from theme import Theme
+from event_bus import event_bus
+from validators import validate_lore
 
 _CATEGORIES = ["people", "places", "events", "themes", "rules", "general"]
 _FILTER_OPTIONS = ["All"] + _CATEGORIES
 
 _STYLESHEET = f"""
     QWidget {{
-        background-color: {_BG};
-        color: {_TEXT};
+        background-color: {Theme.BG};
+        color: {Theme.TEXT};
     }}
 
     QSplitter::handle {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         width: 2px;
     }}
 
     QListWidget {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         border: 1px solid #444444;
         border-radius: 4px;
         padding: 4px;
@@ -62,54 +57,54 @@ _STYLESHEET = f"""
         border-bottom: 1px solid #444444;
     }}
     QListWidget::item:selected {{
-        background-color: {_ACCENT};
+        background-color: {Theme.ACCENT};
         color: #1e1e1e;
     }}
 
     QComboBox {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         border: 1px solid #555555;
         border-radius: 4px;
         padding: 5px 8px;
-        color: {_TEXT};
+        color: {Theme.TEXT};
         min-height: 24px;
     }}
     QComboBox::drop-down {{
         border: none;
     }}
     QComboBox QAbstractItemView {{
-        background-color: {_PANEL};
-        color: {_TEXT};
-        selection-background-color: {_ACCENT};
+        background-color: {Theme.PANEL};
+        color: {Theme.TEXT};
+        selection-background-color: {Theme.ACCENT};
         selection-color: #1e1e1e;
     }}
 
     QLineEdit {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         border: 1px solid #555555;
         border-radius: 4px;
         padding: 6px 8px;
-        color: {_TEXT};
+        color: {Theme.TEXT};
         font-size: 14px;
     }}
     QLineEdit:focus {{
-        border-color: {_ACCENT};
+        border-color: {Theme.ACCENT};
     }}
 
     QTextEdit {{
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
         border: 1px solid #555555;
         border-radius: 4px;
         padding: 6px;
-        color: {_TEXT};
+        color: {Theme.TEXT};
         font-size: 13px;
     }}
     QTextEdit:focus {{
-        border-color: {_ACCENT};
+        border-color: {Theme.ACCENT};
     }}
 
     QCheckBox {{
-        color: {_TEXT};
+        color: {Theme.TEXT};
         spacing: 8px;
         font-size: 13px;
     }}
@@ -118,15 +113,15 @@ _STYLESHEET = f"""
         height: 18px;
         border: 1px solid #555555;
         border-radius: 3px;
-        background-color: {_PANEL};
+        background-color: {Theme.PANEL};
     }}
     QCheckBox::indicator:checked {{
-        background-color: {_ACCENT};
-        border-color: {_ACCENT};
+        background-color: {Theme.ACCENT};
+        border-color: {Theme.ACCENT};
     }}
 
     QPushButton {{
-        background-color: {_ACCENT};
+        background-color: {Theme.ACCENT};
         color: #1e1e1e;
         border: none;
         border-radius: 4px;
@@ -143,7 +138,7 @@ _STYLESHEET = f"""
 
     QPushButton#deleteButton {{
         background-color: #c0392b;
-        color: {_TEXT};
+        color: {Theme.TEXT};
     }}
     QPushButton#deleteButton:hover {{
         background-color: #e74c3c;
@@ -153,18 +148,18 @@ _STYLESHEET = f"""
     }}
 
     QLabel {{
-        color: {_TEXT};
+        color: {Theme.TEXT};
         font-size: 12px;
     }}
     QLabel#sectionLabel {{
         font-weight: bold;
         font-size: 13px;
-        color: {_ACCENT};
+        color: {Theme.ACCENT};
     }}
 """
 
 
-class LoreEditorTab(QWidget):
+class LoreEditorTab(BaseTab):
     """Lore management tab with list + editor split layout."""
 
     # The id of the lore entry currently loaded in the editor, or None.
@@ -174,20 +169,16 @@ class LoreEditorTab(QWidget):
     _loading: bool = False
 
     def __init__(self, db, parent=None):
-        super().__init__(parent)
-        self.db = db
-        self.setStyleSheet(_STYLESHEET)
         self._presets_cache: list[dict] = []
-        self._build_ui()
-        self._connect_signals()
-        self.load_lore_list()
-        self.refresh_presets()
+        super().__init__(db, parent)
+        self.refresh()
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
-    def _build_ui(self):
+    def _init_ui(self):
+        self.setStyleSheet(_STYLESHEET)
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
 
@@ -242,7 +233,7 @@ class LoreEditorTab(QWidget):
         # ---- Presets section ----
         presets_group = QGroupBox("Presets")
         presets_group.setStyleSheet(
-            f"QGroupBox {{ color: {_ACCENT}; font-weight: bold; "
+            f"QGroupBox {{ color: {Theme.ACCENT}; font-weight: bold; "
             f"border: 1px solid #555; border-radius: 4px; "
             f"margin-top: 6px; padding-top: 14px; }} "
             f"QGroupBox::title {{ subcontrol-origin: margin; left: 8px; }}"
@@ -286,7 +277,7 @@ class LoreEditorTab(QWidget):
         self.preset_delete_btn.setObjectName("deleteButton")
         self.preset_delete_btn.setStyleSheet(
             f"QPushButton {{ font-size: 11px; padding: 2px 8px; "
-            f"background-color: #c0392b; color: {_TEXT}; }} "
+            f"background-color: #c0392b; color: {Theme.TEXT}; }} "
             f"QPushButton:hover {{ background-color: #e74c3c; }}"
         )
         preset_btn_row.addWidget(self.preset_delete_btn)
@@ -391,6 +382,15 @@ class LoreEditorTab(QWidget):
         self.active_check.stateChanged.connect(self._mark_dirty)
 
     # ------------------------------------------------------------------
+    # Refresh (BaseTab contract)
+    # ------------------------------------------------------------------
+
+    def refresh(self):
+        """Reload the lore list and presets from the database."""
+        self.load_lore_list()
+        self.refresh_presets()
+
+    # ------------------------------------------------------------------
     # List management
     # ------------------------------------------------------------------
 
@@ -420,9 +420,9 @@ class LoreEditorTab(QWidget):
 
             # Visual indicator for inactive entries: dimmed text.
             if not entry["active"]:
-                item.setForeground(QColor(_DIMMED))
+                item.setForeground(QColor(Theme.DIMMED))
             else:
-                item.setForeground(QColor(_TEXT))
+                item.setForeground(QColor(Theme.TEXT))
 
             self.lore_list.addItem(item)
 
@@ -519,9 +519,22 @@ class LoreEditorTab(QWidget):
         """Save and refresh — called by the Save button and other explicit actions."""
         self._save_to_db()
         self.load_lore_list()
+        event_bus.lore_changed.emit()
 
     def _on_save_clicked(self):
-        """Handle Save button click."""
+        """Handle Save button click with validation."""
+        if self._current_id is None:
+            return
+
+        title = self.title_edit.text().strip()
+        content = self.content_edit.toPlainText()
+
+        errors = validate_lore(title, content)
+        if errors:
+            msg = "\n".join(f"- {e.field}: {e.message}" for e in errors)
+            QMessageBox.warning(self, "Validation Error", msg)
+            return
+
         self.save_current()
 
     # ------------------------------------------------------------------
@@ -543,6 +556,7 @@ class LoreEditorTab(QWidget):
 
         self._current_id = new_id
         self.load_lore_list()
+        event_bus.lore_changed.emit()
 
         # If the filter hides the new entry, switch filter to "All".
         if self.lore_list.currentItem() is None or (
@@ -578,6 +592,7 @@ class LoreEditorTab(QWidget):
         self._clear_editor()
         self._set_editor_enabled(False)
         self.load_lore_list()
+        event_bus.lore_changed.emit()
 
     # ------------------------------------------------------------------
     # Category filter
@@ -620,11 +635,13 @@ class LoreEditorTab(QWidget):
         """Activate all lore entries."""
         self.db.set_all_lore_active(True)
         self.load_lore_list()
+        event_bus.lore_changed.emit()
 
     def _on_deselect_all(self):
         """Deactivate all lore entries."""
         self.db.set_all_lore_active(False)
         self.load_lore_list()
+        event_bus.lore_changed.emit()
 
     def _on_toggle_category(self):
         """Toggle all entries in the currently filtered category."""
@@ -642,6 +659,7 @@ class LoreEditorTab(QWidget):
 
         self.db.set_category_lore_active(selected_filter, new_active)
         self.load_lore_list()
+        event_bus.lore_changed.emit()
         self._update_toggle_category_label()
 
     def _update_toggle_category_label(self):
@@ -691,6 +709,7 @@ class LoreEditorTab(QWidget):
             return
         self.db.apply_lore_preset(preset_id)
         self.load_lore_list()
+        event_bus.lore_changed.emit()
 
     def _on_preset_save(self):
         """Save the currently active lore IDs as a new preset."""

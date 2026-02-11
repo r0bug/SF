@@ -150,20 +150,44 @@ CREATE TABLE IF NOT EXISTS distributions (
 );
 """
 
+_CREATE_ARTISTS = """
+CREATE TABLE IF NOT EXISTS artists (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE,
+    legal_name  TEXT,
+    is_default  BOOLEAN DEFAULT 0,
+    bio         TEXT,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+_SCHEMA_VERSION = 4  # Increment for each new migration
+
 
 class Database:
     """SQLite database interface for the Song Factory application."""
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str = None) -> None:
         """Initialise the database: create the storage directory, open a
-        connection, and ensure all tables exist."""
-        DB_DIR.mkdir(parents=True, exist_ok=True)
-        self._db_path = str(DB_PATH)
+        connection, and ensure all tables exist.
+
+        Args:
+            db_path: Optional override for the database file path.
+                     Defaults to ``~/.songfactory/songfactory.db``.
+        """
+        if db_path is not None:
+            self._db_path = db_path
+            os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+        else:
+            DB_DIR.mkdir(parents=True, exist_ok=True)
+            self._db_path = str(DB_PATH)
         self._conn = sqlite3.connect(self._db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA foreign_keys=ON;")
         self._create_tables()
+        self._run_migrations()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -180,9 +204,39 @@ class Database:
             cur.execute(_CREATE_CD_PROJECTS)
             cur.execute(_CREATE_CD_TRACKS)
             cur.execute(_CREATE_DISTRIBUTIONS)
-        self._migrate_songs_table()
+            cur.execute(_CREATE_ARTISTS)
 
-    def _migrate_songs_table(self) -> None:
+    # ------------------------------------------------------------------
+    # Versioned migrations (PRAGMA user_version)
+    # ------------------------------------------------------------------
+
+    def _run_migrations(self) -> None:
+        """Apply all pending migrations in order.
+
+        Each migration is guarded by the current ``PRAGMA user_version``
+        so it only runs once.  After all migrations the version is bumped
+        to ``_SCHEMA_VERSION``.
+        """
+        current = self._conn.execute("PRAGMA user_version").fetchone()[0]
+
+        if current < 1:
+            self._migrate_v1_song_metadata_columns()
+
+        if current < 2:
+            self._migrate_v2_add_indexes()
+
+        if current < 3:
+            self._migrate_v3_foreign_key_integrity()
+
+        if current < 4:
+            self._migrate_v4_artists_table()
+
+        self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+        self._conn.commit()
+
+    # --- v1: Add song metadata columns (original migration) ---
+
+    def _migrate_v1_song_metadata_columns(self) -> None:
         """Add metadata columns to the songs table if they don't exist yet.
 
         Uses PRAGMA table_info to check which columns are present, then
@@ -215,6 +269,182 @@ class Database:
                     cur.execute(
                         f"ALTER TABLE songs ADD COLUMN {col_name} {col_type};"
                     )
+
+    # --- v2: Add database indexes ---
+
+    def _migrate_v2_add_indexes(self) -> None:
+        """Create indexes for common query patterns."""
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_songs_status ON songs(status);",
+            "CREATE INDEX IF NOT EXISTS idx_songs_genre_id ON songs(genre_id);",
+            "CREATE INDEX IF NOT EXISTS idx_songs_created_at ON songs(created_at);",
+            "CREATE INDEX IF NOT EXISTS idx_songs_task_id ON songs(task_id);",
+            "CREATE INDEX IF NOT EXISTS idx_lore_category ON lore(category);",
+            "CREATE INDEX IF NOT EXISTS idx_lore_active ON lore(active);",
+            "CREATE INDEX IF NOT EXISTS idx_distributions_status ON distributions(status);",
+            "CREATE INDEX IF NOT EXISTS idx_distributions_song_id ON distributions(song_id);",
+            "CREATE INDEX IF NOT EXISTS idx_cd_tracks_project_id ON cd_tracks(project_id);",
+        ]
+        with self._cursor() as cur:
+            for sql in indexes:
+                cur.execute(sql)
+
+    # --- v3: Foreign key integrity (table rebuild) ---
+
+    def _migrate_v3_foreign_key_integrity(self) -> None:
+        """Rebuild songs and distributions tables with proper FK constraints.
+
+        - ``songs.genre_id`` → ``ON DELETE SET NULL``
+        - ``distributions.song_id`` → ``ON DELETE CASCADE``
+        """
+        # Temporarily disable FK checks for the rebuild
+        self._conn.execute("PRAGMA foreign_keys=OFF;")
+        try:
+            with self._cursor() as cur:
+                # --- Rebuild songs table ---
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS songs_new (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        title         TEXT NOT NULL,
+                        genre_id      INTEGER REFERENCES genres(id) ON DELETE SET NULL,
+                        genre_label   TEXT,
+                        prompt        TEXT NOT NULL,
+                        lyrics        TEXT NOT NULL,
+                        user_input    TEXT,
+                        lore_snapshot TEXT,
+                        status        TEXT DEFAULT 'draft',
+                        file_path_1   TEXT,
+                        file_path_2   TEXT,
+                        notes         TEXT,
+                        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        task_id            TEXT,
+                        conversion_id_1    TEXT,
+                        conversion_id_2    TEXT,
+                        audio_url_1        TEXT,
+                        audio_url_2        TEXT,
+                        music_style        TEXT,
+                        duration_seconds   REAL,
+                        file_format        TEXT,
+                        file_size_1        INTEGER,
+                        file_size_2        INTEGER,
+                        voice_used         TEXT,
+                        lalals_created_at  TEXT,
+                        lyrics_timestamped TEXT,
+                        file_path_vocals       TEXT,
+                        file_path_instrumental TEXT
+                    );
+                """)
+
+                # Copy data — get columns that exist in both tables
+                cur.execute("PRAGMA table_info(songs);")
+                old_cols = {row["name"] for row in cur.fetchall()}
+                cur.execute("PRAGMA table_info(songs_new);")
+                new_cols = {row["name"] for row in cur.fetchall()}
+                shared = sorted(old_cols & new_cols)
+                cols_str = ", ".join(shared)
+
+                cur.execute(
+                    f"INSERT INTO songs_new ({cols_str}) "
+                    f"SELECT {cols_str} FROM songs;"
+                )
+                cur.execute("DROP TABLE songs;")
+                cur.execute("ALTER TABLE songs_new RENAME TO songs;")
+
+                # Re-create indexes on the rebuilt table
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_songs_status "
+                    "ON songs(status);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_songs_genre_id "
+                    "ON songs(genre_id);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_songs_created_at "
+                    "ON songs(created_at);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_songs_task_id "
+                    "ON songs(task_id);"
+                )
+
+                # --- Rebuild distributions table ---
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS distributions_new (
+                        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                        song_id           INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+                        distributor       TEXT NOT NULL DEFAULT 'distrokid',
+                        release_type      TEXT DEFAULT 'single',
+                        artist_name       TEXT DEFAULT 'Yakima Finds',
+                        album_title       TEXT,
+                        songwriter        TEXT NOT NULL,
+                        language          TEXT DEFAULT 'English',
+                        primary_genre     TEXT,
+                        cover_art_path    TEXT,
+                        is_instrumental   BOOLEAN DEFAULT 0,
+                        lyrics_submitted  TEXT,
+                        release_date      TEXT,
+                        record_label      TEXT,
+                        ai_disclosure     BOOLEAN DEFAULT 1,
+                        distrokid_url     TEXT,
+                        status            TEXT DEFAULT 'draft',
+                        error_message     TEXT,
+                        notes             TEXT,
+                        created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+
+                cur.execute("PRAGMA table_info(distributions);")
+                old_cols_d = {row["name"] for row in cur.fetchall()}
+                cur.execute("PRAGMA table_info(distributions_new);")
+                new_cols_d = {row["name"] for row in cur.fetchall()}
+                shared_d = sorted(old_cols_d & new_cols_d)
+                cols_str_d = ", ".join(shared_d)
+
+                cur.execute(
+                    f"INSERT INTO distributions_new ({cols_str_d}) "
+                    f"SELECT {cols_str_d} FROM distributions;"
+                )
+                cur.execute("DROP TABLE distributions;")
+                cur.execute(
+                    "ALTER TABLE distributions_new RENAME TO distributions;"
+                )
+
+                # Re-create indexes on distributions
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_distributions_status "
+                    "ON distributions(status);"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_distributions_song_id "
+                    "ON distributions(song_id);"
+                )
+
+            # Verify FK integrity
+            issues = self._conn.execute("PRAGMA foreign_key_check").fetchall()
+            if issues:
+                import logging
+                logger = logging.getLogger("songfactory.database")
+                logger.warning(
+                    "FK check found %d issues after migration v3", len(issues)
+                )
+        finally:
+            self._conn.execute("PRAGMA foreign_keys=ON;")
+
+    def _migrate_v4_artists_table(self) -> None:
+        """v4: Create artists table and seed the default artist."""
+        self._conn.execute(_CREATE_ARTISTS)
+        # Seed default artist if table is empty
+        count = self._conn.execute("SELECT COUNT(*) FROM artists").fetchone()[0]
+        if count == 0:
+            self._conn.execute(
+                "INSERT INTO artists (name, legal_name, is_default, bio) "
+                "VALUES (?, ?, 1, ?)",
+                ("Yakima Finds", "", "AI-generated music project from Yakima, WA"),
+            )
+        self._conn.commit()
 
     @contextmanager
     def _cursor(self):
@@ -1026,6 +1256,63 @@ class Database:
                 "DELETE FROM distributions WHERE id = ?;", (dist_id,)
             )
             return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Artists
+    # ------------------------------------------------------------------
+
+    def get_all_artists(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM artists ORDER BY is_default DESC, name"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_default_artist(self) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM artists WHERE is_default = 1 LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_artist(self, artist_id: int) -> Optional[dict]:
+        row = self._conn.execute(
+            "SELECT * FROM artists WHERE id = ?", (artist_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def add_artist(self, name: str, legal_name: str = "", bio: str = "", is_default: bool = False) -> int:
+        if is_default:
+            self._conn.execute("UPDATE artists SET is_default = 0")
+        cur = self._conn.execute(
+            "INSERT INTO artists (name, legal_name, is_default, bio) VALUES (?, ?, ?, ?)",
+            (name, legal_name, int(is_default), bio),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def update_artist(self, artist_id: int, **kwargs: Any) -> bool:
+        if kwargs.get("is_default"):
+            self._conn.execute("UPDATE artists SET is_default = 0")
+        allowed = {"name", "legal_name", "is_default", "bio"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return False
+        updates["updated_at"] = datetime.now().isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [artist_id]
+        self._conn.execute(
+            f"UPDATE artists SET {set_clause} WHERE id = ?", values
+        )
+        self._conn.commit()
+        return True
+
+    def delete_artist(self, artist_id: int) -> bool:
+        # Don't allow deleting the default artist
+        artist = self.get_artist(artist_id)
+        if artist and artist.get("is_default"):
+            return False
+        self._conn.execute("DELETE FROM artists WHERE id = ?", (artist_id,))
+        self._conn.commit()
+        return True
 
     # ==================================================================
     # UTILITY
