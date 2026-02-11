@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QGroupBox,
     QInputDialog,
+    QFileDialog,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
@@ -288,6 +289,34 @@ class LoreEditorTab(BaseTab):
         self.add_button = QPushButton("Add New Lore")
         sidebar_layout.addWidget(self.add_button)
 
+        # ---- Export / Import buttons ----
+        lore_io_row = QHBoxLayout()
+        lore_io_row.setSpacing(4)
+
+        self.export_lore_btn = QPushButton("Export Lore")
+        self.export_lore_btn.setFixedHeight(28)
+        self.export_lore_btn.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 2px 8px; "
+            "background-color: #444444; color: #e0e0e0; border: 1px solid #666; }"
+            "QPushButton:hover { background-color: #555555; }"
+        )
+        self.export_lore_btn.setToolTip("Export all lore entries to a JSON file")
+        lore_io_row.addWidget(self.export_lore_btn)
+
+        self.import_lore_btn = QPushButton("Import Lore")
+        self.import_lore_btn.setFixedHeight(28)
+        self.import_lore_btn.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 2px 8px; "
+            "background-color: #444444; color: #e0e0e0; border: 1px solid #666; }"
+            "QPushButton:hover { background-color: #555555; }"
+        )
+        self.import_lore_btn.setToolTip(
+            "Import lore from a JSON file (personal bundle or lore-only)"
+        )
+        lore_io_row.addWidget(self.import_lore_btn)
+
+        sidebar_layout.addLayout(lore_io_row)
+
         splitter.addWidget(sidebar)
 
         # ---- Main editor area ----
@@ -368,6 +397,10 @@ class LoreEditorTab(BaseTab):
         self.select_all_btn.clicked.connect(self._on_select_all)
         self.deselect_all_btn.clicked.connect(self._on_deselect_all)
         self.toggle_category_btn.clicked.connect(self._on_toggle_category)
+
+        # Export / Import lore
+        self.export_lore_btn.clicked.connect(self._on_export_lore)
+        self.import_lore_btn.clicked.connect(self._on_import_lore)
 
         # Preset buttons
         self.preset_apply_btn.clicked.connect(self._on_preset_apply)
@@ -787,3 +820,69 @@ class LoreEditorTab(BaseTab):
 
         self.db.delete_lore_preset(preset_id)
         self.refresh_presets()
+
+    # ------------------------------------------------------------------
+    # Export / Import lore
+    # ------------------------------------------------------------------
+
+    def _on_export_lore(self):
+        """Export all lore entries to a user-chosen JSON file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Lore",
+            "songfactory_lore.json",
+            "JSON Files (*.json)",
+        )
+        if not path:
+            return
+
+        try:
+            from export_import import export_personal_bundle
+
+            export_personal_bundle(self.db, path, lore_only=True)
+            QMessageBox.information(
+                self,
+                "Export Complete",
+                f"Lore exported to:\n\n{path}",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Could not export lore:\n\n{exc}",
+            )
+
+    def _on_import_lore(self):
+        """Import lore from a JSON file (personal bundle or lore-only)."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Lore",
+            "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            from export_import import import_personal_bundle
+
+            report = import_personal_bundle(self.db, path)
+            created = report.get("lore_created", 0)
+            updated = report.get("lore_updated", 0)
+
+            self.load_lore_list()
+            event_bus.lore_changed.emit()
+
+            QMessageBox.information(
+                self,
+                "Import Complete",
+                f"Lore import results:\n\n"
+                f"  Created: {created}\n"
+                f"  Updated: {updated}",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"Could not import lore:\n\n{exc}",
+            )

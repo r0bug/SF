@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
         self.db = Database()
         self._seed_if_needed()
         self._check_for_backup()
+        self._auto_import_bundle()
 
         self._setup_tabs()
         self._setup_status_bar()
@@ -124,6 +125,45 @@ class MainWindow(QMainWindow):
             self.db.restore_from(newest["path"])
         except Exception:
             pass  # Non-fatal; the app will still start with current DB
+
+    def _auto_import_bundle(self):
+        """Import a personal bundle on startup if enabled and newer."""
+        import logging
+        logger = logging.getLogger("songfactory.sync")
+
+        if self.db.get_config("auto_import_on_startup", "false").lower() != "true":
+            return
+        sync_folder = self.db.get_config("sync_folder", "")
+        if not sync_folder:
+            return
+
+        bundle_path = os.path.join(sync_folder, "songfactory_personal.json")
+        if not os.path.exists(bundle_path):
+            return
+
+        try:
+            from export_import import preview_personal_bundle, import_personal_bundle
+
+            preview = preview_personal_bundle(bundle_path)
+            exported_at = preview.get("exported_at", "")
+            last_import = self.db.get_config("last_import_at", "")
+
+            if last_import and exported_at <= last_import:
+                return  # Already up to date
+
+            report = import_personal_bundle(self.db, bundle_path)
+            from datetime import datetime
+            now = datetime.now().isoformat(timespec="seconds")
+            self.db.set_config("last_import_at", now)
+
+            changes = {k: v for k, v in report.items() if v > 0}
+            if changes:
+                logger.info(
+                    "Auto-imported personal bundle: %s",
+                    ", ".join(f"{k}={v}" for k, v in changes.items()),
+                )
+        except Exception as exc:
+            logger.error("Auto-import failed: %s", exc)
 
     def _setup_tabs(self):
         self.tabs = QTabWidget()

@@ -162,7 +162,25 @@ CREATE TABLE IF NOT EXISTS artists (
 );
 """
 
-_SCHEMA_VERSION = 4  # Increment for each new migration
+_CREATE_TAGS = """
+CREATE TABLE IF NOT EXISTS tags (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE,
+    color       TEXT DEFAULT '#888888',
+    is_builtin  BOOLEAN DEFAULT 0,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+_CREATE_SONG_TAGS = """
+CREATE TABLE IF NOT EXISTS song_tags (
+    song_id  INTEGER NOT NULL REFERENCES songs(id) ON DELETE CASCADE,
+    tag_id   INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (song_id, tag_id)
+);
+"""
+
+_SCHEMA_VERSION = 5  # Increment for each new migration
 
 
 class Database:
@@ -205,6 +223,8 @@ class Database:
             cur.execute(_CREATE_CD_TRACKS)
             cur.execute(_CREATE_DISTRIBUTIONS)
             cur.execute(_CREATE_ARTISTS)
+            cur.execute(_CREATE_TAGS)
+            cur.execute(_CREATE_SONG_TAGS)
 
     # ------------------------------------------------------------------
     # Versioned migrations (PRAGMA user_version)
@@ -230,6 +250,9 @@ class Database:
 
         if current < 4:
             self._migrate_v4_artists_table()
+
+        if current < 5:
+            self._migrate_v5_tags_tables()
 
         self._conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         self._conn.commit()
@@ -444,6 +467,37 @@ class Database:
                 "VALUES (?, ?, 1, ?)",
                 ("Yakima Finds", "", "AI-generated music project from Yakima, WA"),
             )
+        self._conn.commit()
+
+    def _migrate_v5_tags_tables(self) -> None:
+        """v5: Create tags and song_tags tables, seed default tags."""
+        self._conn.execute(_CREATE_TAGS)
+        self._conn.execute(_CREATE_SONG_TAGS)
+        # Indexes for song_tags lookups
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_song_tags_song_id "
+            "ON song_tags(song_id);"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_song_tags_tag_id "
+            "ON song_tags(tag_id);"
+        )
+        # Seed default tags if table is empty
+        count = self._conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+        if count == 0:
+            defaults = [
+                ("Favorite", "#FFD700"),
+                ("Released", "#4CAF50"),
+                ("Needs Lyrics", "#FF9800"),
+                ("Halloween", "#9C27B0"),
+                ("Love Song", "#E91E63"),
+                ("Instrumental", "#2196F3"),
+            ]
+            for name, color in defaults:
+                self._conn.execute(
+                    "INSERT INTO tags (name, color, is_builtin) VALUES (?, ?, 1)",
+                    (name, color),
+                )
         self._conn.commit()
 
     @contextmanager
@@ -1313,6 +1367,111 @@ class Database:
         self._conn.execute("DELETE FROM artists WHERE id = ?", (artist_id,))
         self._conn.commit()
         return True
+
+    # ==================================================================
+    # TAGS
+    # ==================================================================
+
+    def get_all_tags(self) -> list[dict]:
+        """Return every tag, ordered by name."""
+        with self._cursor() as cur:
+            cur.execute("SELECT * FROM tags ORDER BY name ASC;")
+            return self._rows_to_dicts(cur.fetchall())
+
+    def add_tag(self, name: str, color: str = "#888888", is_builtin: bool = False) -> int:
+        """Insert a new tag and return its id."""
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO tags (name, color, is_builtin) VALUES (?, ?, ?);",
+                (name, color, int(is_builtin)),
+            )
+            return cur.lastrowid
+
+    def update_tag(self, tag_id: int, **kwargs: Any) -> bool:
+        """Update one or more columns of a tag. Returns True if updated."""
+        if not kwargs:
+            return False
+        allowed = {"name", "color"}
+        fields = {k: v for k, v in kwargs.items() if k in allowed}
+        if not fields:
+            return False
+        set_clause = ", ".join(f"{col} = ?" for col in fields)
+        values = list(fields.values()) + [tag_id]
+        with self._cursor() as cur:
+            cur.execute(
+                f"UPDATE tags SET {set_clause} WHERE id = ?;",
+                values,
+            )
+            return cur.rowcount > 0
+
+    def delete_tag(self, tag_id: int) -> bool:
+        """Delete a tag by id. Built-in tags cannot be deleted.
+        Returns True if a row was deleted."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT is_builtin FROM tags WHERE id = ?;", (tag_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            if row["is_builtin"]:
+                return False
+            cur.execute("DELETE FROM tags WHERE id = ?;", (tag_id,))
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Song ↔ Tag associations
+    # ------------------------------------------------------------------
+
+    def get_tags_for_song(self, song_id: int) -> list[dict]:
+        """Return all tags associated with a song."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT t.* FROM tags t "
+                "JOIN song_tags st ON t.id = st.tag_id "
+                "WHERE st.song_id = ? ORDER BY t.name ASC;",
+                (song_id,),
+            )
+            return self._rows_to_dicts(cur.fetchall())
+
+    def add_tag_to_song(self, song_id: int, tag_id: int) -> bool:
+        """Associate a tag with a song. Returns True on success."""
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT OR IGNORE INTO song_tags (song_id, tag_id) VALUES (?, ?);",
+                (song_id, tag_id),
+            )
+            return cur.rowcount > 0
+
+    def remove_tag_from_song(self, song_id: int, tag_id: int) -> bool:
+        """Remove a tag association from a song. Returns True if removed."""
+        with self._cursor() as cur:
+            cur.execute(
+                "DELETE FROM song_tags WHERE song_id = ? AND tag_id = ?;",
+                (song_id, tag_id),
+            )
+            return cur.rowcount > 0
+
+    def set_song_tags(self, song_id: int, tag_ids: list[int]) -> None:
+        """Replace all tags for a song with the given tag_ids."""
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM song_tags WHERE song_id = ?;", (song_id,))
+            for tag_id in tag_ids:
+                cur.execute(
+                    "INSERT OR IGNORE INTO song_tags (song_id, tag_id) VALUES (?, ?);",
+                    (song_id, tag_id),
+                )
+
+    def get_songs_by_tag(self, tag_id: int) -> list[dict]:
+        """Return all songs that have a given tag."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT s.* FROM songs s "
+                "JOIN song_tags st ON s.id = st.song_id "
+                "WHERE st.tag_id = ? ORDER BY s.created_at DESC;",
+                (tag_id,),
+            )
+            return self._rows_to_dicts(cur.fetchall())
 
     # ==================================================================
     # UTILITY

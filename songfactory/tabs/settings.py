@@ -30,6 +30,7 @@ from tabs.base_tab import BaseTab
 from theme import Theme
 from secure_config import get_secret, set_secret, SENSITIVE_KEYS
 from ai_models import get_model_choices, DEFAULT_MODEL
+from event_bus import event_bus
 
 
 _STYLESHEET = f"""
@@ -127,6 +128,7 @@ class SettingsTab(BaseTab):
         self._sniffer_thread = None
         self._diag_thread = None
         self._diag_report = None
+        self._auto_export_timer = None
         super().__init__(db, parent)
 
     # ------------------------------------------------------------------
@@ -476,6 +478,69 @@ class SettingsTab(BaseTab):
         backup_group.setLayout(backup_layout)
         root.addWidget(backup_group)
 
+        # ---- Personal Data Sync group ----
+        sync_group = QGroupBox("Personal Data Sync")
+        sync_form = QFormLayout()
+        sync_form.setSpacing(10)
+        sync_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        sync_folder_row = QHBoxLayout()
+        self.sync_folder_edit = QLineEdit()
+        self.sync_folder_edit.setPlaceholderText("Select a sync folder (e.g. Dropbox, Google Drive)...")
+        sync_folder_row.addWidget(self.sync_folder_edit, 1)
+
+        self.browse_sync_btn = QPushButton("Browse...")
+        self.browse_sync_btn.clicked.connect(self._browse_sync_folder)
+        sync_folder_row.addWidget(self.browse_sync_btn)
+
+        sync_form.addRow("Sync Folder:", sync_folder_row)
+
+        sync_btn_row = QHBoxLayout()
+        sync_btn_row.setSpacing(8)
+
+        self.export_bundle_btn = QPushButton("Export Now")
+        self.export_bundle_btn.setToolTip(
+            "Export lore, genres, presets, artists, and settings\n"
+            "to the sync folder as a portable JSON bundle."
+        )
+        self.export_bundle_btn.clicked.connect(self._export_bundle_now)
+        sync_btn_row.addWidget(self.export_bundle_btn)
+
+        self.import_bundle_btn = QPushButton("Import Now")
+        self.import_bundle_btn.setToolTip(
+            "Import a personal bundle from the sync folder.\n"
+            "Existing entries are updated; new entries are created."
+        )
+        self.import_bundle_btn.clicked.connect(self._import_bundle_now)
+        sync_btn_row.addWidget(self.import_bundle_btn)
+
+        sync_btn_row.addStretch()
+        sync_form.addRow("", sync_btn_row)
+
+        self.auto_export_check = QCheckBox("Auto-export on data changes")
+        self.auto_export_check.setToolTip(
+            "Automatically export the personal bundle when lore,\n"
+            "genres, or settings change (2-second debounce)."
+        )
+        sync_form.addRow("", self.auto_export_check)
+
+        self.auto_import_check = QCheckBox("Auto-import on startup")
+        self.auto_import_check.setToolTip(
+            "On app startup, check the sync folder for a newer\n"
+            "bundle and import it automatically."
+        )
+        sync_form.addRow("", self.auto_import_check)
+
+        self.sync_status_label = QLabel("")
+        self.sync_status_label.setStyleSheet(
+            "color: #888888; font-size: 12px; font-style: italic;"
+        )
+        self.sync_status_label.setWordWrap(True)
+        sync_form.addRow("", self.sync_status_label)
+
+        sync_group.setLayout(sync_form)
+        root.addWidget(sync_group)
+
         # ---- Bottom: Save button + status label ----
         bottom_row = QHBoxLayout()
         bottom_row.setSpacing(12)
@@ -579,6 +644,28 @@ class SettingsTab(BaseTab):
             self.db.get_config("dk_songwriter", "")
         )
 
+        # Personal Data Sync
+        self.sync_folder_edit.setText(
+            self.db.get_config("sync_folder", "")
+        )
+        self.auto_export_check.setChecked(
+            self.db.get_config("auto_export_enabled", "false").lower() == "true"
+        )
+        self.auto_import_check.setChecked(
+            self.db.get_config("auto_import_on_startup", "false").lower() == "true"
+        )
+        last_export = self.db.get_config("last_export_at", "")
+        last_import = self.db.get_config("last_import_at", "")
+        parts = []
+        if last_export:
+            parts.append(f"Last export: {last_export}")
+        if last_import:
+            parts.append(f"Last import: {last_import}")
+        self.sync_status_label.setText("  |  ".join(parts) if parts else "")
+
+        # Wire auto-export if enabled
+        self._setup_auto_export()
+
     def save_settings(self):
         """Persist all field values to the database config table."""
         set_secret("api_key", self.api_key_edit.text().strip(), fallback_db=self.db)
@@ -618,6 +705,18 @@ class SettingsTab(BaseTab):
             "dk_artist", self.dk_artist_edit.text().strip() or "Yakima Finds"
         )
         self.db.set_config("dk_songwriter", self.dk_songwriter_edit.text().strip())
+
+        # Personal Data Sync
+        self.db.set_config("sync_folder", self.sync_folder_edit.text().strip())
+        self.db.set_config(
+            "auto_export_enabled",
+            "true" if self.auto_export_check.isChecked() else "false",
+        )
+        self.db.set_config(
+            "auto_import_on_startup",
+            "true" if self.auto_import_check.isChecked() else "false",
+        )
+        self._setup_auto_export()
 
         # Show temporary success message
         self.status_label.setText("Settings saved!")
@@ -1106,3 +1205,223 @@ class SettingsTab(BaseTab):
             "SQLite Database (*.db);;All Files (*)",
         )
         return path if path else None
+
+    # ------------------------------------------------------------------
+    # Personal Data Sync
+    # ------------------------------------------------------------------
+
+    _BUNDLE_FILENAME = "songfactory_personal.json"
+
+    def _browse_sync_folder(self):
+        """Open a folder picker for the sync directory."""
+        current = self.sync_folder_edit.text().strip()
+        if not current:
+            current = os.path.expanduser("~")
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Sync Folder",
+            current,
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if directory:
+            self.sync_folder_edit.setText(directory)
+
+    def _get_sync_path(self) -> str | None:
+        """Return full path to the bundle file, or None if no folder set."""
+        folder = self.sync_folder_edit.text().strip()
+        if not folder:
+            return None
+        return os.path.join(folder, self._BUNDLE_FILENAME)
+
+    def _export_bundle_now(self):
+        """Export a personal bundle to the sync folder."""
+        sync_path = self._get_sync_path()
+        if not sync_path:
+            QMessageBox.warning(
+                self,
+                "No Sync Folder",
+                "Please set a sync folder before exporting.",
+            )
+            return
+
+        try:
+            from export_import import export_personal_bundle
+            from datetime import datetime
+
+            export_personal_bundle(self.db, sync_path)
+            now = datetime.now().isoformat(timespec="seconds")
+            self.db.set_config("last_export_at", now)
+            self.sync_status_label.setText(f"Last export: {now}")
+            self.sync_status_label.setStyleSheet(
+                "color: #4CAF50; font-size: 12px; font-style: italic;"
+            )
+            QMessageBox.information(
+                self,
+                "Export Complete",
+                f"Personal bundle exported to:\n\n{sync_path}",
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Could not export personal bundle:\n\n{exc}",
+            )
+
+    def _import_bundle_now(self):
+        """Import a personal bundle from the sync folder."""
+        sync_path = self._get_sync_path()
+        if not sync_path:
+            QMessageBox.warning(
+                self,
+                "No Sync Folder",
+                "Please set a sync folder before importing.",
+            )
+            return
+
+        if not os.path.exists(sync_path):
+            QMessageBox.warning(
+                self,
+                "No Bundle Found",
+                f"No personal bundle found at:\n\n{sync_path}",
+            )
+            return
+
+        try:
+            from export_import import import_personal_bundle
+            from datetime import datetime
+
+            report = import_personal_bundle(self.db, sync_path)
+            now = datetime.now().isoformat(timespec="seconds")
+            self.db.set_config("last_import_at", now)
+
+            # Build report message
+            lines = []
+            for key, count in report.items():
+                if count > 0:
+                    label = key.replace("_", " ").title()
+                    lines.append(f"  {label}: {count}")
+
+            msg = "\n".join(lines) if lines else "  No changes needed."
+            self.sync_status_label.setText(f"Last import: {now}")
+            self.sync_status_label.setStyleSheet(
+                "color: #4CAF50; font-size: 12px; font-style: italic;"
+            )
+
+            QMessageBox.information(
+                self,
+                "Import Complete",
+                f"Personal bundle imported:\n\n{msg}",
+            )
+
+            # Notify other tabs
+            event_bus.lore_changed.emit()
+            event_bus.genres_changed.emit()
+            event_bus.config_changed.emit("sync")
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"Could not import personal bundle:\n\n{exc}",
+            )
+
+    # ------------------------------------------------------------------
+    # Auto-export on data changes
+    # ------------------------------------------------------------------
+
+    def _setup_auto_export(self):
+        """Wire or unwire the auto-export signal connections."""
+        if self._auto_export_timer is None:
+            self._auto_export_timer = QTimer(self)
+            self._auto_export_timer.setSingleShot(True)
+            self._auto_export_timer.setInterval(2000)
+            self._auto_export_timer.timeout.connect(self._do_auto_export)
+
+        enabled = self.auto_export_check.isChecked()
+        sync_path = self._get_sync_path()
+
+        if enabled and sync_path:
+            # Connect personal_data_changed → debounced export
+            try:
+                event_bus.personal_data_changed.disconnect(
+                    self._schedule_auto_export
+                )
+            except TypeError:
+                pass
+            event_bus.personal_data_changed.connect(self._schedule_auto_export)
+
+            # Wire existing signals → personal_data_changed
+            for sig in (event_bus.lore_changed, event_bus.genres_changed):
+                try:
+                    sig.disconnect(self._emit_personal_data_changed)
+                except TypeError:
+                    pass
+                sig.connect(self._emit_personal_data_changed)
+            try:
+                event_bus.config_changed.disconnect(
+                    self._on_config_changed_for_sync
+                )
+            except TypeError:
+                pass
+            event_bus.config_changed.connect(self._on_config_changed_for_sync)
+        else:
+            # Disconnect all auto-export signals
+            try:
+                event_bus.personal_data_changed.disconnect(
+                    self._schedule_auto_export
+                )
+            except TypeError:
+                pass
+            for sig in (event_bus.lore_changed, event_bus.genres_changed):
+                try:
+                    sig.disconnect(self._emit_personal_data_changed)
+                except TypeError:
+                    pass
+            try:
+                event_bus.config_changed.disconnect(
+                    self._on_config_changed_for_sync
+                )
+            except TypeError:
+                pass
+
+    def _emit_personal_data_changed(self):
+        """Relay lore/genre changes to personal_data_changed."""
+        event_bus.personal_data_changed.emit()
+
+    def _on_config_changed_for_sync(self, key: str):
+        """Relay config changes (non-sync keys) to personal_data_changed."""
+        # Avoid infinite loop: don't trigger on our own sync keys
+        if key not in ("last_export_at", "last_import_at", "sync_folder",
+                        "auto_export_enabled", "auto_import_on_startup", "sync"):
+            event_bus.personal_data_changed.emit()
+
+    def _schedule_auto_export(self):
+        """Restart the debounce timer for auto-export."""
+        if self._auto_export_timer is not None:
+            self._auto_export_timer.start()
+
+    def _do_auto_export(self):
+        """Perform the actual auto-export (called after debounce)."""
+        sync_path = self._get_sync_path()
+        if not sync_path:
+            return
+        try:
+            import logging
+            from export_import import export_personal_bundle
+            from datetime import datetime
+
+            export_personal_bundle(self.db, sync_path)
+            now = datetime.now().isoformat(timespec="seconds")
+            self.db.set_config("last_export_at", now)
+            self.sync_status_label.setText(f"Auto-exported: {now}")
+            self.sync_status_label.setStyleSheet(
+                "color: #4CAF50; font-size: 12px; font-style: italic;"
+            )
+            logging.getLogger("songfactory.sync").info(
+                "Auto-exported personal bundle to %s", sync_path
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger("songfactory.sync").error(
+                "Auto-export failed: %s", exc
+            )

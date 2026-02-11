@@ -15,9 +15,12 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QPushButton, QLabel, QMessageBox, QAbstractItemView, QFrame,
     QApplication, QSizePolicy, QProgressBar, QMenu,
+    QDialog, QListWidget, QListWidgetItem, QColorDialog, QInputDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QFont, QDesktopServices, QAction
+
+from widgets.tag_chips import TagChipsWidget
 
 from tabs.base_tab import BaseTab
 from theme import Theme
@@ -124,6 +127,22 @@ class SongLibraryTab(BaseTab):
             self.status_filter.addItem(s, userData=s)
         filter_bar.addWidget(self.status_filter, stretch=1)
 
+        self.tag_filter = QComboBox()
+        self.tag_filter.setMinimumWidth(140)
+        self.tag_filter.addItem("All Tags", userData=None)
+        filter_bar.addWidget(self.tag_filter, stretch=1)
+
+        self.manage_tags_btn = QPushButton("Manage Tags")
+        self.manage_tags_btn.setObjectName("manageTagsBtn")
+        self.manage_tags_btn.setFixedHeight(28)
+        self.manage_tags_btn.setToolTip("Add, rename, recolor, or delete tags")
+        self.manage_tags_btn.setStyleSheet(
+            f"background-color: {Theme.PANEL}; color: {Theme.TEXT}; "
+            "border: 1px solid #555; border-radius: 4px; "
+            "padding: 4px 12px; font-size: 12px;"
+        )
+        filter_bar.addWidget(self.manage_tags_btn)
+
         self.refresh_library_btn = QPushButton("Refresh")
         self.refresh_library_btn.setObjectName("refreshLibraryBtn")
         self.refresh_library_btn.setFixedHeight(28)
@@ -180,14 +199,15 @@ class SongLibraryTab(BaseTab):
 
         # ---- Song table ----
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Title", "Genre", "Status", "Created", "Actions"])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["Title", "Genre", "Tags", "Status", "Created", "Actions"])
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -236,6 +256,26 @@ class SongLibraryTab(BaseTab):
         mono_font.setStyleHint(QFont.StyleHint.Monospace)
         self.lyrics_edit.setFont(mono_font)
         detail_layout.addWidget(self.lyrics_edit)
+
+        # Tags row
+        tags_row = QHBoxLayout()
+        tags_row.setSpacing(8)
+        tags_label = QLabel("Tags:")
+        tags_label.setStyleSheet("font-weight: bold; margin-top: 4px;")
+        tags_row.addWidget(tags_label)
+        self.detail_tags_container = QWidget()
+        self.detail_tags_layout = QHBoxLayout(self.detail_tags_container)
+        self.detail_tags_layout.setContentsMargins(0, 0, 0, 0)
+        tags_row.addWidget(self.detail_tags_container, stretch=1)
+        self.edit_tags_btn = QPushButton("Edit Tags")
+        self.edit_tags_btn.setFixedHeight(24)
+        self.edit_tags_btn.setStyleSheet(
+            f"background-color: {Theme.PANEL}; color: {Theme.TEXT}; "
+            "border: 1px solid #555; border-radius: 4px; "
+            "padding: 2px 10px; font-size: 11px;"
+        )
+        tags_row.addWidget(self.edit_tags_btn)
+        detail_layout.addLayout(tags_row)
 
         # Button row
         btn_row = QHBoxLayout()
@@ -380,6 +420,8 @@ class SongLibraryTab(BaseTab):
         self.search_box.textChanged.connect(self._on_search_text_changed)
         self.genre_filter.currentIndexChanged.connect(self.apply_filters)
         self.status_filter.currentIndexChanged.connect(self.apply_filters)
+        self.tag_filter.currentIndexChanged.connect(self.apply_filters)
+        self.manage_tags_btn.clicked.connect(self._open_manage_tags)
         self.refresh_library_btn.clicked.connect(self.load_songs)
 
         # Song table
@@ -404,9 +446,11 @@ class SongLibraryTab(BaseTab):
         self.copy_prompt_btn.clicked.connect(self._copy_prompt)
         self.copy_lyrics_btn.clicked.connect(self._copy_lyrics)
         self.delete_btn.clicked.connect(self.delete_song)
+        self.edit_tags_btn.clicked.connect(self._edit_song_tags)
 
         # Cross-tab event bus
         event_bus.songs_changed.connect(self.load_songs)
+        event_bus.tags_changed.connect(self.refresh_tags_filter)
 
     # ------------------------------------------------------------------
     # BaseTab lifecycle overrides
@@ -948,6 +992,35 @@ class SongLibraryTab(BaseTab):
                 )
                 cd_menu.addAction(action)
             menu.addMenu(cd_menu)
+
+        # Tags submenu
+        all_tags = self.db.get_all_tags()
+        if all_tags:
+            tags_menu = QMenu("Tags", self)
+            tags_menu.setStyleSheet(
+                f"QMenu {{ background-color: {Theme.PANEL}; color: {Theme.TEXT}; "
+                f"border: 1px solid #555555; padding: 4px; }}"
+                f"QMenu::item {{ padding: 6px 20px; }}"
+                f"QMenu::item:selected {{ background-color: {Theme.ACCENT}; color: #000000; }}"
+            )
+            song_tags = self.db.get_tags_for_song(song_id)
+            song_tag_ids = {t["id"] for t in song_tags}
+            for tag in all_tags:
+                tag_action = QAction(tag["name"], self)
+                tag_action.setCheckable(True)
+                tag_action.setChecked(tag["id"] in song_tag_ids)
+                tag_action.triggered.connect(
+                    lambda checked, sid=song_id, tid=tag["id"]:
+                        self._toggle_song_tag(sid, tid, checked)
+                )
+                tags_menu.addAction(tag_action)
+            tags_menu.addSeparator()
+            new_tag_action = QAction("Create New Tag...", self)
+            new_tag_action.triggered.connect(
+                lambda checked, sid=song_id: self._create_and_assign_tag(sid)
+            )
+            tags_menu.addAction(new_tag_action)
+            menu.addMenu(tags_menu)
 
         menu.addSeparator()
 
@@ -1888,6 +1961,7 @@ class SongLibraryTab(BaseTab):
         """Load all songs from the database and refresh the view."""
         self.all_songs = self.db.get_all_songs()
         self.refresh_genres_filter()
+        self.refresh_tags_filter()
         self.apply_filters()
         self._update_queue_count()
 
@@ -1954,6 +2028,26 @@ class SongLibraryTab(BaseTab):
 
         self.genre_filter.blockSignals(False)
 
+    def refresh_tags_filter(self):
+        """Reload the tag filter dropdown from the database."""
+        current_data = self.tag_filter.currentData()
+        self.tag_filter.blockSignals(True)
+        self.tag_filter.clear()
+        self.tag_filter.addItem("All Tags", userData=None)
+
+        tags = self.db.get_all_tags()
+        for tag in tags:
+            self.tag_filter.addItem(tag["name"], userData=tag["id"])
+
+        # Restore previous selection if still valid
+        if current_data is not None:
+            for i in range(self.tag_filter.count()):
+                if self.tag_filter.itemData(i) == current_data:
+                    self.tag_filter.setCurrentIndex(i)
+                    break
+
+        self.tag_filter.blockSignals(False)
+
     # ------------------------------------------------------------------
     # Filtering
     # ------------------------------------------------------------------
@@ -1964,11 +2058,12 @@ class SongLibraryTab(BaseTab):
         self._search_timer.start()
 
     def apply_filters(self):
-        """Filter self.all_songs by the current search text, genre, and status,
-        then repopulate the table."""
+        """Filter self.all_songs by the current search text, genre, status,
+        and tag, then repopulate the table."""
         search_text = self.search_box.text().strip().lower()
         genre_id = self.genre_filter.currentData()
         status = self.status_filter.currentData()
+        tag_id = self.tag_filter.currentData()
 
         filtered = self.all_songs
 
@@ -1979,6 +2074,12 @@ class SongLibraryTab(BaseTab):
         # Status filter
         if status is not None:
             filtered = [s for s in filtered if s.get("status") == status]
+
+        # Tag filter
+        if tag_id is not None:
+            tagged_songs = self.db.get_songs_by_tag(tag_id)
+            tagged_ids = {s["id"] for s in tagged_songs}
+            filtered = [s for s in filtered if s.get("id") in tagged_ids]
 
         # Search filter (across title, lyrics, prompt)
         if search_text:
@@ -2012,17 +2113,23 @@ class SongLibraryTab(BaseTab):
             genre_item = QTableWidgetItem(genre_text)
             self.table.setItem(row_idx, 1, genre_item)
 
+            # Tags (colored chips)
+            song_id = song.get("id")
+            tags = self.db.get_tags_for_song(song_id) if song_id else []
+            chips = TagChipsWidget(tags)
+            self.table.setCellWidget(row_idx, 2, chips)
+
             # Status (colored badge)
             status_val = song.get("status", "draft")
             badge = StatusBadgeWidget(status_val)
-            self.table.setCellWidget(row_idx, 2, badge)
+            self.table.setCellWidget(row_idx, 3, badge)
 
             # Created
             created = song.get("created_at", "")
             if created and len(created) > 16:
                 created = created[:16]  # trim seconds
             created_item = QTableWidgetItem(created)
-            self.table.setItem(row_idx, 3, created_item)
+            self.table.setItem(row_idx, 4, created_item)
 
             # Actions column: small buttons
             actions_widget = QWidget()
@@ -2096,7 +2203,7 @@ class SongLibraryTab(BaseTab):
             del_btn.clicked.connect(lambda checked, sid=song.get("id"): self._quick_delete(sid))
             actions_layout.addWidget(del_btn)
 
-            self.table.setCellWidget(row_idx, 4, actions_widget)
+            self.table.setCellWidget(row_idx, 5, actions_widget)
 
             # Set row height
             self.table.setRowHeight(row_idx, 36)
@@ -2142,6 +2249,7 @@ class SongLibraryTab(BaseTab):
         )
         self.prompt_edit.setPlainText(fresh.get("prompt") or "")
         self.lyrics_edit.setPlainText(fresh.get("lyrics") or "")
+        self._update_detail_tags(fresh["id"])
         self.detail_frame.setVisible(True)
 
     # ------------------------------------------------------------------
@@ -2380,3 +2488,224 @@ class SongLibraryTab(BaseTab):
         # Song no longer visible (filtered out) -- hide detail
         self.detail_frame.setVisible(False)
         self.selected_song = None
+
+    # ------------------------------------------------------------------
+    # Tag helpers
+    # ------------------------------------------------------------------
+
+    def _update_detail_tags(self, song_id: int):
+        """Refresh the tag chips shown in the detail area."""
+        # Clear existing widgets
+        while self.detail_tags_layout.count():
+            child = self.detail_tags_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        tags = self.db.get_tags_for_song(song_id)
+        chips = TagChipsWidget(tags)
+        self.detail_tags_layout.addWidget(chips)
+
+    def _toggle_song_tag(self, song_id: int, tag_id: int, checked: bool):
+        """Context menu action: add or remove a tag from a song."""
+        if checked:
+            self.db.add_tag_to_song(song_id, tag_id)
+        else:
+            self.db.remove_tag_from_song(song_id, tag_id)
+        event_bus.tags_changed.emit()
+        self._refresh_after_edit(song_id)
+
+    def _create_and_assign_tag(self, song_id: int):
+        """Context menu action: create a new tag and assign it to a song."""
+        name, ok = QInputDialog.getText(
+            self, "New Tag", "Tag name:"
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        try:
+            tag_id = self.db.add_tag(name)
+        except Exception:
+            QMessageBox.warning(
+                self, "Duplicate Tag", f'A tag named "{name}" already exists.'
+            )
+            return
+        self.db.add_tag_to_song(song_id, tag_id)
+        event_bus.tags_changed.emit()
+        self._refresh_after_edit(song_id)
+
+    def _edit_song_tags(self):
+        """Open a checkable tag dialog for the selected song."""
+        if self.selected_song is None:
+            return
+        song_id = self.selected_song["id"]
+        all_tags = self.db.get_all_tags()
+        song_tags = self.db.get_tags_for_song(song_id)
+        song_tag_ids = {t["id"] for t in song_tags}
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Edit Tags")
+        dlg.setMinimumWidth(280)
+        layout = QVBoxLayout(dlg)
+
+        tag_list = QListWidget()
+        for tag in all_tags:
+            item = QListWidgetItem(tag["name"])
+            item.setData(Qt.ItemDataRole.UserRole, tag["id"])
+            item.setCheckState(
+                Qt.CheckState.Checked if tag["id"] in song_tag_ids
+                else Qt.CheckState.Unchecked
+            )
+            item.setForeground(QColor(tag.get("color", "#888888")))
+            tag_list.addItem(item)
+        layout.addWidget(tag_list)
+
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_ids = []
+            for i in range(tag_list.count()):
+                item = tag_list.item(i)
+                if item.checkState() == Qt.CheckState.Checked:
+                    new_ids.append(item.data(Qt.ItemDataRole.UserRole))
+            self.db.set_song_tags(song_id, new_ids)
+            event_bus.tags_changed.emit()
+            self._update_detail_tags(song_id)
+            self._refresh_after_edit(song_id)
+
+    def _open_manage_tags(self):
+        """Open the Manage Tags dialog."""
+        dlg = ManageTagsDialog(self.db, parent=self)
+        dlg.exec()
+        event_bus.tags_changed.emit()
+        self.refresh_tags_filter()
+        # Refresh table to show any tag renames / color changes
+        self.apply_filters()
+
+
+class ManageTagsDialog(QDialog):
+    """Dialog for adding, renaming, recoloring, and deleting tags."""
+
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("Manage Tags")
+        self.setMinimumSize(360, 320)
+        self._build_ui()
+        self._load_tags()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.tag_list = QListWidget()
+        layout.addWidget(self.tag_list)
+
+        btn_row = QHBoxLayout()
+        self.add_btn = QPushButton("Add")
+        self.rename_btn = QPushButton("Rename")
+        self.color_btn = QPushButton("Color")
+        self.delete_btn = QPushButton("Delete")
+        self.close_btn = QPushButton("Close")
+
+        for btn in (self.add_btn, self.rename_btn, self.color_btn,
+                    self.delete_btn, self.close_btn):
+            btn_row.addWidget(btn)
+
+        layout.addLayout(btn_row)
+
+        self.add_btn.clicked.connect(self._add_tag)
+        self.rename_btn.clicked.connect(self._rename_tag)
+        self.color_btn.clicked.connect(self._change_color)
+        self.delete_btn.clicked.connect(self._delete_tag)
+        self.close_btn.clicked.connect(self.accept)
+
+    def _load_tags(self):
+        self.tag_list.clear()
+        tags = self.db.get_all_tags()
+        for tag in tags:
+            label = tag["name"]
+            if tag.get("is_builtin"):
+                label += "  (built-in)"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, tag["id"])
+            item.setData(Qt.ItemDataRole.UserRole + 1, tag.get("is_builtin", 0))
+            color = tag.get("color", "#888888")
+            item.setForeground(QColor(color))
+            self.tag_list.addItem(item)
+
+    def _selected_tag_id(self):
+        item = self.tag_list.currentItem()
+        if item is None:
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
+    def _add_tag(self):
+        name, ok = QInputDialog.getText(self, "New Tag", "Tag name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        color = QColorDialog.getColor(QColor("#888888"), self, "Tag Color")
+        if not color.isValid():
+            return
+        try:
+            self.db.add_tag(name, color.name())
+        except Exception:
+            QMessageBox.warning(
+                self, "Duplicate", f'Tag "{name}" already exists.'
+            )
+            return
+        self._load_tags()
+
+    def _rename_tag(self):
+        tag_id = self._selected_tag_id()
+        if tag_id is None:
+            return
+        name, ok = QInputDialog.getText(self, "Rename Tag", "New name:")
+        if not ok or not name.strip():
+            return
+        try:
+            self.db.update_tag(tag_id, name=name.strip())
+        except Exception:
+            QMessageBox.warning(
+                self, "Error", f'Could not rename: "{name.strip()}" may already exist.'
+            )
+            return
+        self._load_tags()
+
+    def _change_color(self):
+        tag_id = self._selected_tag_id()
+        if tag_id is None:
+            return
+        color = QColorDialog.getColor(QColor("#888888"), self, "Tag Color")
+        if not color.isValid():
+            return
+        self.db.update_tag(tag_id, color=color.name())
+        self._load_tags()
+
+    def _delete_tag(self):
+        tag_id = self._selected_tag_id()
+        if tag_id is None:
+            return
+        item = self.tag_list.currentItem()
+        is_builtin = item.data(Qt.ItemDataRole.UserRole + 1)
+        if is_builtin:
+            QMessageBox.information(
+                self, "Cannot Delete", "Built-in tags cannot be deleted."
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete Tag",
+            "Delete this tag? It will be removed from all songs.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.db.delete_tag(tag_id)
+            self._load_tags()

@@ -5,14 +5,14 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 ## Features
 
 - **Song Creator** — Generate songs with AI using customizable lore context, genre selection, and style notes. Background threaded API calls keep the UI responsive.
-- **Lore Editor** — Manage world-building lore entries (people, places, events, themes, rules, general) with category filtering, bulk toggle controls, and saveable presets.
+- **Lore Editor** — Manage world-building lore entries (people, places, events, themes, rules, general) with category filtering, bulk toggle controls, saveable presets, and lore-only export/import.
 - **Lore Discovery** — Search the web, summarize content with AI, and save results directly as lore entries.
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
-- **Song Library** — Browse, search, and filter songs by status. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. Error recovery via headless home-page download.
+- **Song Library** — Browse, search, and filter songs by genre, status, or tag. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. User-defined song tags with colored chips, context-menu tagging, and a Manage Tags dialog. Error recovery via headless home-page download.
 - **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and disc burning via cdrdao/wodim.
 - **Distribution** — Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation. Includes release form, genre mapping, cover art validation/resize, AI disclosure, and upload queue with login/2FA support.
 - **Analytics** — Song statistics, status breakdown charts, and generation history.
-- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, DistroKid credentials, browser automation paths, Xvfb virtual display, pipeline diagnostics, debug screenshots, and database backup/restore.
+- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, DistroKid credentials, browser automation paths, Xvfb virtual display, pipeline diagnostics, debug screenshots, database backup/restore, and personal data sync (Dropbox/Google Drive cloud sync with auto-export).
 
 ## Tech Stack
 
@@ -80,7 +80,7 @@ songfactory/
   logging_config.py        # RotatingFileHandler (5MB, 3 backups)
   timeouts.py              # Config-driven timeouts with DB override
   ai_models.py             # Central model registry (DEFAULT_MODEL, get_model_choices)
-  export_import.py         # JSON/CSV export, JSON import with duplicate detection
+  export_import.py         # JSON/CSV export, JSON import, personal bundle sync
   web_search.py            # DuckDuckGo web search integration
   lore_summarizer.py       # AI-powered content summarization for lore
   icon.svg                 # Application icon
@@ -101,6 +101,7 @@ songfactory/
     status_badge.py        # StatusBadge colored label widget
     search_bar.py          # SearchBar with filter controls
     log_viewer.py          # LogViewer for automation logs
+    tag_chips.py           # TagChipsWidget for colored song tag chips
   automation/
     base_worker.py         # BaseWorker(QThread) with stop flag, DB lifecycle
     browser_worker.py      # LalalsWorker QThread — submit/download pipeline
@@ -130,7 +131,8 @@ songfactory/
   tests/
     test_lalals_fixes.py   # Tests for browser integration bug fixes
     test_pipeline_diagnostics.py # Tests for diagnostic tool
-tests/                     # Main test suite (202 tests)
+    test_personal_bundle.py # Tests for personal data bundle export/import
+tests/                     # Main test suite (239 tests)
 ```
 
 ## Database

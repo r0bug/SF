@@ -2,11 +2,12 @@
 
 Database: `~/.songfactory/songfactory.db` (SQLite, WAL journal mode, foreign keys ON)
 
-Schema version tracked via `PRAGMA user_version` (currently v4). Migrations run automatically on startup:
+Schema version tracked via `PRAGMA user_version` (currently v5). Migrations run automatically on startup:
 - **v1** — Add metadata columns to songs table
 - **v2** — Add performance indexes
 - **v3** — Rebuild foreign keys
 - **v4** — Add artists table
+- **v5** — Add tags and song_tags tables with 6 default tags
 
 ---
 
@@ -126,6 +127,10 @@ Key-value store for application settings.
 | dk_password | DistroKid login password |
 | dk_artist | Default DistroKid artist name |
 | dk_songwriter | Default songwriter legal name |
+| sync_folder | Personal data sync folder path |
+| auto_export | "true" or "false" — auto-export on data changes |
+| auto_import | "true" or "false" — auto-import on startup |
+| last_import_at | ISO timestamp of last successful import |
 
 ---
 
@@ -222,3 +227,43 @@ Artist profiles for song attribution (added in schema v4).
 | created_at | TIMESTAMP | CURRENT_TIMESTAMP | Creation time |
 
 Default seed data: "Yakima Finds" with `is_default = 1`.
+
+---
+
+## tags
+
+User-defined and built-in song tags for organization (added in schema v5).
+
+| Column | Type | Default | Description |
+|--------|------|---------|-------------|
+| id | INTEGER | PK AUTOINCREMENT | Unique identifier |
+| name | TEXT | NOT NULL UNIQUE | Tag display name |
+| color | TEXT | '#888888' | Hex color for chip display |
+| is_builtin | BOOLEAN | 0 | Whether this is a system default tag (cannot be deleted) |
+| created_at | TIMESTAMP | CURRENT_TIMESTAMP | Creation time |
+
+### Default tags (is_builtin = 1)
+
+| Name | Color |
+|------|-------|
+| Favorite | #FFD700 |
+| Released | #4CAF50 |
+| Needs Lyrics | #FF9800 |
+| Halloween | #9C27B0 |
+| Love Song | #E91E63 |
+| Instrumental | #2196F3 |
+
+---
+
+## song_tags
+
+Many-to-many association between songs and tags (added in schema v5).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| song_id | INTEGER | FK → songs(id) ON DELETE CASCADE |
+| tag_id | INTEGER | FK → tags(id) ON DELETE CASCADE |
+
+Primary key: `(song_id, tag_id)`
+
+Indexes: `idx_song_tags_song_id`, `idx_song_tags_tag_id`

@@ -52,6 +52,10 @@ Manage world-building lore entries used as context for song generation.
 - **Update** — Overwrites the selected preset with the currently active lore entries (with confirmation)
 - **Delete** — Removes the selected preset after confirmation (does not affect lore entries)
 
+### Lore Export / Import
+- **Export Lore** — Export lore entries to a portable JSON bundle (lore-only mode)
+- **Import Lore** — Import lore entries from a personal bundle file, with upsert-by-name (creates new or updates existing)
+
 ### Editor
 - Title, category dropdown, active checkbox, and markdown content editor
 - Dimmed text in the list for inactive entries
@@ -86,11 +90,22 @@ Browse, search, and manage all songs with automation controls.
 
 ### Search & Filter
 - Text search across title, lyrics, prompt, and notes
+- Genre filter dropdown
 - Status filter dropdown (draft, queued, processing, submitted, completed, error, imported)
+- Tag filter dropdown — show only songs with a specific tag
 
 ### Song Table
 - Colored status badges per song
+- Tag chips column showing up to 4 colored tag chips per song with "+N" overflow
 - Expandable detail area for viewing/editing individual songs
+
+### Song Tags
+- **6 built-in tags**: Favorite, Released, Needs Lyrics, Halloween, Love Song, Instrumental
+- **User-created tags** with custom names and colors
+- **Context menu** — Right-click a song → Tags submenu with checkable items + "Create New Tag..."
+- **Detail area** — Tags row with colored chips and "Edit Tags" button (opens checkable list dialog)
+- **Manage Tags dialog** — Add, rename, change color, delete tags (built-in tags cannot be deleted)
+- **Tag filter** — Dropdown in the filter bar to show only songs with a specific tag
 
 ### Automation Queue
 - **Browser Mode** — Playwright-based headless browser automation: submit songs to lalals.com, wait for processing, download results
@@ -235,6 +250,32 @@ Song statistics and generation history.
 
 ---
 
+## Personal Data Sync
+
+Portable bundle export/import for syncing data across machines via cloud storage (Dropbox, Google Drive, etc.).
+
+### Bundle Contents
+- Lore entries (title, content, category, active status)
+- Genres (name, prompt template, description, BPM range)
+- Lore presets (with lore titles resolved for portability — not raw IDs)
+- Artists (name, legal name, bio)
+- Non-sensitive config keys (ai_model, submission_mode, browser_path, download_dir, max_prompt_length, use_xvfb)
+- Excludes API keys, passwords, and credentials
+
+### Sync Features
+- **Export Now** — Manual export to sync folder as `songfactory_personal.json`
+- **Import Now** — Manual import from sync folder bundle
+- **Auto-export on data changes** — Debounced (2-second) auto-export triggered by lore/genre changes
+- **Auto-import on startup** — Checks bundle timestamp vs. last import; imports only if newer
+- **Lore-only mode** — Export/import just lore entries (available in Lore Editor sidebar)
+
+### Portability
+- Uses names/titles as unique keys (not database IDs)
+- Upsert semantics: creates new entries or updates existing ones by name
+- Preset lore references stored as titles, resolved back to IDs on import
+
+---
+
 ## Settings
 
 ### API Settings
@@ -258,6 +299,13 @@ Song statistics and generation history.
 - DistroKid email and password
 - Default artist name (must match registered DistroKid artist)
 - Default songwriter legal name (required for all releases)
+
+### Personal Data Sync
+- Sync folder path (Dropbox, Google Drive, or any directory)
+- Export Now / Import Now buttons
+- Auto-export on data changes (lore, genres — debounced 2 seconds)
+- Auto-import on startup (compares bundle timestamp)
+- Sync status label showing last export/import times
 
 ### Automation
 - Xvfb virtual display toggle for headless browser operation

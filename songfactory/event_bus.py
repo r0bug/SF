@@ -23,6 +23,8 @@ class DataEventBus(QObject):
     config_changed = pyqtSignal(str)        # config key that changed
     distributions_changed = pyqtSignal()
     cd_projects_changed = pyqtSignal()
+    personal_data_changed = pyqtSignal()
+    tags_changed = pyqtSignal()
 
 
 # Module-level singleton
