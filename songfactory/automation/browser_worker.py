@@ -315,9 +315,12 @@ class LalalsWorker(QThread):
                     time.sleep(post_delay)
 
                     from automation.retry import retry_call
+                    from automation.download_manager import DownloadVerificationError
 
                     file_path_1 = ""
                     file_path_2 = ""
+                    actual_size_1 = 0
+                    actual_size_2 = 0
                     metadata = {}
 
                     # Strategy 1: Use task_id to fetch fresh URLs via API
@@ -342,8 +345,10 @@ class LalalsWorker(QThread):
                             )
                             if len(paths) >= 1:
                                 file_path_1 = str(paths[0])
+                                actual_size_1 = Path(paths[0]).stat().st_size
                             if len(paths) >= 2:
                                 file_path_2 = str(paths[1])
+                                actual_size_2 = Path(paths[1]).stat().st_size
                             logger.info(
                                 f"API download: {len(paths)} file(s)"
                             )
@@ -358,6 +363,7 @@ class LalalsWorker(QThread):
                             return driver.download_from_home(
                                 title, download_dir,
                                 prompt=prompt, lyrics=lyrics,
+                                task_id=task_id,
                             )
 
                         try:
@@ -369,9 +375,11 @@ class LalalsWorker(QThread):
                             )
                             if paths:
                                 file_path_1 = str(paths[0])
+                                actual_size_1 = Path(paths[0]).stat().st_size
                                 logger.info(f"Home page download: {paths[0]}")
                                 if len(paths) >= 2:
                                     file_path_2 = str(paths[1])
+                                    actual_size_2 = Path(paths[1]).stat().st_size
                         except Exception as e:
                             logger.warning(f"Home page download failed: {e}")
 
@@ -397,11 +405,12 @@ class LalalsWorker(QThread):
                                     backoff_base=2,
                                 )
                                 file_path_2 = str(p2)
+                                actual_size_2 = Path(p2).stat().st_size
                                 logger.info(f"Version 2 via URL: {p2}")
                             except Exception as e:
                                 logger.warning(f"Version 2 URL download failed: {e}")
 
-                    # Update DB
+                    # Update DB — override API file_size with actual on-disk sizes
                     update_kwargs = {
                         'status': 'completed' if file_path_1 else 'error',
                         'file_path_1': file_path_1,
@@ -418,6 +427,12 @@ class LalalsWorker(QThread):
                     for key in metadata_cols:
                         if key in metadata:
                             update_kwargs[key] = metadata[key]
+
+                    # Always use actual file sizes from disk
+                    if actual_size_1:
+                        update_kwargs['file_size_1'] = actual_size_1
+                    if actual_size_2:
+                        update_kwargs['file_size_2'] = actual_size_2
 
                     set_parts = []
                     values = []

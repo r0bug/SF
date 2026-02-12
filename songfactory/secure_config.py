@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger("songfactory.security")
 
 SERVICE_NAME = "SongFactory"
-SENSITIVE_KEYS = {"api_key", "musicgpt_api_key", "lalals_password", "dk_password"}
+SENSITIVE_KEYS = {"api_key", "musicgpt_api_key", "lalals_password", "dk_password", "segmind_api_key"}
 
 try:
     import keyring as _keyring

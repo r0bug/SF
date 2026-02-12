@@ -182,6 +182,25 @@ class SettingsTab(BaseTab):
             self.model_combo.addItem(label, model_id)
         api_form.addRow("Default AI Model:", self.model_combo)
 
+        # Segmind API Key
+        segmind_key_row = QHBoxLayout()
+        self.segmind_key_edit = QLineEdit()
+        self.segmind_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.segmind_key_edit.setPlaceholderText("Segmind API key for cover art generation...")
+        self.segmind_key_edit.setMinimumWidth(300)
+        segmind_key_row.addWidget(self.segmind_key_edit, 1)
+
+        self.toggle_segmind_key_btn = QPushButton("Show")
+        self.toggle_segmind_key_btn.setFixedWidth(60)
+        self.toggle_segmind_key_btn.clicked.connect(self._toggle_segmind_key_visibility)
+        segmind_key_row.addWidget(self.toggle_segmind_key_btn)
+
+        self.test_segmind_btn = QPushButton("Test Segmind")
+        self.test_segmind_btn.clicked.connect(self._test_segmind_connection)
+        segmind_key_row.addWidget(self.test_segmind_btn)
+
+        api_form.addRow("Segmind API Key:", segmind_key_row)
+
         api_group.setLayout(api_form)
         root.addWidget(api_group)
 
@@ -584,6 +603,10 @@ class SettingsTab(BaseTab):
             get_secret("api_key", fallback_db=self.db) or ""
         )
 
+        self.segmind_key_edit.setText(
+            get_secret("segmind_api_key", fallback_db=self.db) or ""
+        )
+
         # AI model - use stored model ID
         model = self.db.get_config("ai_model", "")
         for i in range(self.model_combo.count()):
@@ -669,6 +692,7 @@ class SettingsTab(BaseTab):
     def save_settings(self):
         """Persist all field values to the database config table."""
         set_secret("api_key", self.api_key_edit.text().strip(), fallback_db=self.db)
+        set_secret("segmind_api_key", self.segmind_key_edit.text().strip(), fallback_db=self.db)
         self.db.set_config("ai_model", self.model_combo.currentData() or self.model_combo.currentText())
         self.db.set_config("lalals_username", self.lalals_username_edit.text().strip())
         self.db.set_config("lalals_email", self.lalals_email_edit.text().strip())
@@ -768,6 +792,59 @@ class SettingsTab(BaseTab):
         else:
             self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
             self.toggle_key_btn.setText("Show")
+
+    def _toggle_segmind_key_visibility(self):
+        """Toggle between showing and hiding the Segmind API key."""
+        if self.segmind_key_edit.echoMode() == QLineEdit.EchoMode.Password:
+            self.segmind_key_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_segmind_key_btn.setText("Hide")
+        else:
+            self.segmind_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_segmind_key_btn.setText("Show")
+
+    def _test_segmind_connection(self):
+        """Test the Segmind API key with a small image generation."""
+        api_key = self.segmind_key_edit.text().strip()
+        if not api_key:
+            QMessageBox.warning(
+                self,
+                "No API Key",
+                "Please enter a Segmind API key before testing.",
+            )
+            return
+
+        self.test_segmind_btn.setEnabled(False)
+        self.test_segmind_btn.setText("Testing...")
+
+        try:
+            from automation.image_generator import SegmindImageGenerator
+
+            gen = SegmindImageGenerator(api_key=api_key)
+            success = gen.test_connection()
+
+            if success:
+                QMessageBox.information(
+                    self,
+                    "Connection Successful",
+                    "Successfully connected to the Segmind API.\n\n"
+                    "Cover art generation is ready to use.",
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Connection Failed",
+                    "Could not connect to the Segmind API.\n\n"
+                    "Please check your API key and try again.",
+                )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Connection Error",
+                f"Error testing Segmind connection:\n\n{exc}",
+            )
+        finally:
+            self.test_segmind_btn.setEnabled(True)
+            self.test_segmind_btn.setText("Test Segmind")
 
     # ------------------------------------------------------------------
     # Connection test

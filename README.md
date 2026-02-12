@@ -10,9 +10,9 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
 - **Song Library** — Browse, search, and filter songs by genre, status, or tag. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. User-defined song tags with colored chips, context-menu tagging, and a Manage Tags dialog. Error recovery via headless home-page download.
 - **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and disc burning via cdrdao/wodim.
-- **Distribution** — Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation. Includes release form, genre mapping, cover art validation/resize, AI disclosure, and upload queue with login/2FA support.
+- **Distribution** — Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation. Includes release form, genre mapping, cover art validation/resize, AI cover art generation (Segmind API), AI disclosure, and upload queue with login/2FA support.
 - **Analytics** — Song statistics, status breakdown charts, and generation history.
-- **Settings** — Configure API keys (Anthropic, MusicGPT), lalals.com credentials, DistroKid credentials, browser automation paths, Xvfb virtual display, pipeline diagnostics, debug screenshots, database backup/restore, and personal data sync (Dropbox/Google Drive cloud sync with auto-export).
+- **Settings** — Configure API keys (Anthropic, MusicGPT, Segmind), lalals.com credentials, DistroKid credentials, browser automation paths, Xvfb virtual display, pipeline diagnostics, debug screenshots, database backup/restore, and personal data sync (Dropbox/Google Drive cloud sync with auto-export).
 
 ## Tech Stack
 
@@ -22,6 +22,7 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 | AI Backend | Anthropic API (Claude) |
 | Database | SQLite (WAL mode) |
 | Music Generation | lalals.com (browser automation + MusicGPT API) |
+| Cover Art Generation | Segmind API (Flux 1.1 Pro, SDXL, Vega) |
 | Distribution | DistroKid (browser automation) |
 | Browser Automation | Playwright |
 | CD Burning | cdrdao, wodim |
@@ -58,7 +59,8 @@ On first launch, the app creates a SQLite database at `~/.songfactory/songfactor
 2. **Lalals.com Credentials** — Email/password for browser automation song submission.
 3. **MusicGPT API Key** — For direct API submission mode (alternative to browser automation).
 4. **DistroKid Credentials** — Email, password, default artist name, and songwriter legal name for distribution uploads.
-5. **Download Directory** — Where generated audio files are saved (default: `~/Music/SongFactory`).
+5. **Segmind API Key** — For AI cover art generation (Flux 1.1 Pro, SDXL, Vega models).
+6. **Download Directory** — Where generated audio files are saved (default: `~/Music/SongFactory`).
 
 ### Backup & Restore
 
@@ -97,6 +99,7 @@ songfactory/
     analytics.py           # Analytics tab — statistics and charts
     history_import_dialog.py  # Dialog for importing lalals.com history
     song_picker_dialog.py  # Dialog for selecting songs (CD track picker)
+    cover_art_dialog.py    # Dialog for AI cover art generation (Segmind)
   widgets/
     status_badge.py        # StatusBadge colored label widget
     search_bar.py          # SearchBar with filter controls
@@ -108,6 +111,7 @@ songfactory/
     lalals_driver.py       # Playwright browser driver for lalals.com
     browser_profiles.py    # Centralized profile paths, cache clearing
     selector_health.py     # CSS selector health checks for lalals.com
+    selector_registry.py   # Self-healing CSS selector registry with promote/demote learning
     pipeline_diagnostics.py # 5-phase browser pipeline diagnostic worker
     retry.py               # with_retry decorator, exponential backoff
     atomic_io.py           # Atomic file write utilities
@@ -115,7 +119,8 @@ songfactory/
     distrokid_worker.py    # DistroKid upload QThread — login/2FA, form fill, upload
     distributor_base.py    # DistributorPlugin ABC, DistroKidPlugin
     cover_art_preparer.py  # Cover art validation and resize for distribution
-    download_manager.py    # File download utilities (Playwright + HTTP)
+    download_manager.py    # File download + audio validation (Playwright + HTTP)
+    image_generator.py     # Segmind API client for AI cover art generation
     api_worker.py          # MusicGPT API worker thread
     history_importer.py    # Lalals.com history import thread
     song_detail_syncer.py  # Sync prompt/lyrics from lalals.com profile API
@@ -132,7 +137,7 @@ songfactory/
     test_lalals_fixes.py   # Tests for browser integration bug fixes
     test_pipeline_diagnostics.py # Tests for diagnostic tool
     test_personal_bundle.py # Tests for personal data bundle export/import
-tests/                     # Main test suite (239 tests)
+tests/                     # Main test suite (288 tests)
 ```
 
 ## Database

@@ -1482,13 +1482,15 @@ class SongLibraryTab(BaseTab):
         self.queue_status_label.setText(f"Status: Recovering '{title}' from home page...")
         QApplication.processEvents()
 
-        # Fetch song prompt and lyrics for better matching
+        # Fetch song prompt, lyrics, and task_id for better matching
         song_row = self.db.get_song(song_id) if hasattr(self.db, 'get_song') else None
         prompt = ""
         lyrics = ""
+        task_id = ""
         if song_row:
             prompt = song_row.get("prompt", "") or ""
             lyrics = song_row.get("lyrics", "") or ""
+            task_id = song_row.get("task_id", "") or ""
 
         try:
             from playwright.sync_api import sync_playwright
@@ -1539,6 +1541,7 @@ class SongLibraryTab(BaseTab):
             page.wait_for_timeout(3000)
             paths = driver.download_from_home(
                 title, download_dir, prompt=prompt, lyrics=lyrics,
+                task_id=task_id,
             )
 
             # Capture a screenshot for debugging regardless of outcome
@@ -1548,11 +1551,20 @@ class SongLibraryTab(BaseTab):
             pw.stop()
 
             if paths:
+                from pathlib import Path as _Path
                 update_kwargs = {"status": "completed"}
                 if len(paths) >= 1:
                     update_kwargs["file_path_1"] = str(paths[0])
+                    try:
+                        update_kwargs["file_size_1"] = _Path(paths[0]).stat().st_size
+                    except OSError:
+                        pass
                 if len(paths) >= 2:
                     update_kwargs["file_path_2"] = str(paths[1])
+                    try:
+                        update_kwargs["file_size_2"] = _Path(paths[1]).stat().st_size
+                    except OSError:
+                        pass
                 self.db.update_song(song_id, **update_kwargs)
                 self.queue_status_label.setText(
                     f"Status: Recovered '{title}' — {len(paths)} file(s)"
@@ -1663,6 +1675,7 @@ class SongLibraryTab(BaseTab):
                 title = song.get("title", "Untitled")
                 prompt = song.get("prompt", "") or ""
                 lyrics = song.get("lyrics", "") or ""
+                task_id = song.get("task_id", "") or ""
 
                 self.queue_status_label.setText(
                     f"Recovering: {title} ({i + 1}/{len(error_songs)})"
@@ -1675,14 +1688,24 @@ class SongLibraryTab(BaseTab):
                     page.wait_for_timeout(3000)
                     paths = driver.download_from_home(
                         title, download_dir, prompt=prompt, lyrics=lyrics,
+                        task_id=task_id,
                     )
 
                     if paths:
+                        from pathlib import Path as _Path
                         update_kwargs = {"status": "completed"}
                         if len(paths) >= 1:
                             update_kwargs["file_path_1"] = str(paths[0])
+                            try:
+                                update_kwargs["file_size_1"] = _Path(paths[0]).stat().st_size
+                            except OSError:
+                                pass
                         if len(paths) >= 2:
                             update_kwargs["file_path_2"] = str(paths[1])
+                            try:
+                                update_kwargs["file_size_2"] = _Path(paths[1]).stat().st_size
+                            except OSError:
+                                pass
                         self.db.update_song(song_id, **update_kwargs)
                         success_count += 1
                     else:

@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QPushButton, QLabel, QLineEdit, QComboBox,
     QCheckBox, QTextEdit, QDateEdit, QGroupBox, QFormLayout,
     QFileDialog, QMessageBox, QProgressBar, QFrame, QScrollArea,
-    QSizePolicy,
+    QSizePolicy, QDialog,
 )
 from PyQt6.QtCore import Qt, QDate, QTimer
 from PyQt6.QtGui import QPixmap, QColor
@@ -155,6 +155,18 @@ class DistributionTab(BaseTab):
         self.art_browse_btn = QPushButton("Browse...")
         self.art_browse_btn.clicked.connect(self._browse_cover_art)
         art_row.addWidget(self.art_browse_btn)
+
+        self.art_generate_btn = QPushButton("Generate Art")
+        self.art_generate_btn.setStyleSheet(
+            f"background-color: {Theme.ACCENT}; color: #1a1a1a; font-weight: bold; "
+            "border: none; border-radius: 4px; padding: 6px 14px;"
+        )
+        self.art_generate_btn.setToolTip(
+            "Use AI to generate cover art from the song's lyrics.\n"
+            "Requires Segmind API key (set in Settings)."
+        )
+        self.art_generate_btn.clicked.connect(self._generate_cover_art)
+        art_row.addWidget(self.art_generate_btn)
 
         self.art_validate_btn = QPushButton("Validate")
         self.art_validate_btn.clicked.connect(self._validate_cover_art)
@@ -541,6 +553,53 @@ class DistributionTab(BaseTab):
                 self, "Invalid Cover Art",
                 "Issues found:\n\n" + "\n".join(f"- {e}" for e in info["errors"])
             )
+
+    def _generate_cover_art(self):
+        """Open the AI cover art generation dialog."""
+        from secure_config import get_secret
+
+        segmind_key = get_secret("segmind_api_key", fallback_db=self.db)
+        if not segmind_key:
+            QMessageBox.warning(
+                self, "No Segmind API Key",
+                "A Segmind API key is required for AI cover art generation.\n\n"
+                "Set it in Settings > API Settings > Segmind API Key."
+            )
+            return
+
+        song_id = self.song_combo.currentData()
+        if song_id is None:
+            QMessageBox.warning(
+                self, "No Song Selected",
+                "Please select a song first."
+            )
+            return
+
+        song = self.db.get_song(song_id)
+        if not song:
+            return
+
+        lyrics = self.lyrics_edit.toPlainText().strip()
+        if not lyrics:
+            lyrics = song.get("lyrics", "")
+        title = self.title_edit.text().strip() or song.get("title", "")
+
+        from tabs.cover_art_dialog import CoverArtDialog
+
+        dialog = CoverArtDialog(
+            song_id=song_id,
+            lyrics=lyrics,
+            title=title,
+            db=self.db,
+            parent=self,
+        )
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            result_path = dialog.get_result_path()
+            if result_path:
+                self.art_path_edit.setText(result_path)
+                self._update_art_preview(result_path)
+                self._log(f"AI cover art saved: {result_path}")
 
     # ------------------------------------------------------------------
     # CRUD

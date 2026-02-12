@@ -127,6 +127,7 @@ Key-value store for application settings.
 | dk_password | DistroKid login password |
 | dk_artist | Default DistroKid artist name |
 | dk_songwriter | Default songwriter legal name |
+| segmind_api_key | Segmind API key for AI cover art generation |
 | sync_folder | Personal data sync folder path |
 | auto_export | "true" or "false" — auto-export on data changes |
 | auto_import | "true" or "false" — auto-import on startup |

@@ -120,12 +120,28 @@ Browse, search, and manage all songs with automation controls.
 - **Recover Error Songs** — Batch button that launches a headless browser, navigates to lalals.com home page, and downloads songs in error status by matching card titles
 - **Recover from Home Page** — Right-click context menu option for individual songs without task_ids
 - **Multi-strategy card matching** — Matches songs on the lalals.com home page by title, title prefix, prompt prefix, lyrics prefix, or word overlap (lalals generates its own song titles that may differ from the database)
+- **Project ID priority matching** — When `task_id` is available, cards are first matched by `data-project-id` attribute (exact match) before falling back to text-based matching, eliminating false positives from fuzzy text overlap
 - **Refresh Library** button reloads the song list from the database
 - Cards identified via `div[data-name="ProjectItem"]` with hover-reveal three-dot menu
 
+### Download Verification
+- **Audio header validation** — Downloaded files are checked for valid MP3 (sync word `0xFF 0xE0` or ID3 tag), WAV (RIFF), OGG, or FLAC headers
+- **Minimum size check** — Files under 10 KB are rejected (likely error pages or empty responses)
+- **HTML/JSON error detection** — Files starting with `<`, `{`, or `[` are identified as text/markup and rejected
+- **Size mismatch detection** — When an expected file size is provided, downloads differing by more than 5% are rejected
+- **Automatic cleanup** — Invalid files are deleted immediately after detection
+- **File size propagation** — `file_size_1` and `file_size_2` database columns are always populated from actual on-disk file sizes after every download path (API, browser, home page recovery)
+
+### Self-Healing Selectors
+- **SelectorRegistry** — Persists CSS selector priority order to `~/.songfactory/selector_registry.json`
+- **Promote on success** — When a selector matches a visible element, it moves to the front of its group for next time
+- **Demote on failure** — When a selector fails, it moves to the back of its group
+- **Grouped selectors** — `prompt_textarea`, `lyrics_toggle`, `lyrics_textarea`, `generate_button`, `home_nav`
+- **Register-once semantics** — Default selector order is only written for new groups; learned ordering persists across sessions
+
 ### Download Strategies (Priority Order)
 1. **API download** — Use captured `task_id` to fetch fresh URLs from `api.musicgpt.com/api/public/v1/byId`, download from S3
-2. **Home page download** — Navigate to lalals.com home, find song card, click three-dot menu → Download → Full Song
+2. **Home page download** — Navigate to lalals.com home, find song card by `data-project-id` or text, click three-dot menu → Download → Full Song
 3. **Direct S3 URL** — Construct S3 URL from conversion IDs: `https://lalals.s3.amazonaws.com/conversions/standard/{cid}/{cid}.mp3`
 
 ### API Capture
@@ -189,7 +205,7 @@ Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via Di
 - **Songwriter** — Legal name (required by DistroKid)
 - **Genre** — Song Factory genre with automatic mapping to DistroKid's genre list (23 mappings)
 - **Language** — Dropdown with common languages
-- **Cover Art** — File picker with preview, validation (min 1000x1000, square, JPG/PNG), auto-resize to 3000x3000
+- **Cover Art** — File picker with preview, validation (min 1000x1000, square, JPG/PNG), auto-resize to 3000x3000, or AI-generated via Segmind API
 - **Instrumental Flag** — Checkbox for instrumental tracks
 - **AI Disclosure** — Checkbox for AI-generated content (checked by default)
 - **Release Date** — Calendar picker
@@ -207,6 +223,14 @@ All 23 Song Factory genres are mapped to DistroKid's fixed genre list:
 ### Cover Art Preparation
 - Validates format (JPG/PNG only), dimensions (minimum 1000x1000), and aspect ratio (must be square)
 - Auto-resizes to 3000x3000 using Lanczos resampling (requires Pillow)
+
+### AI Cover Art Generation
+- **Generate Art** button in the Distribution form opens a cover art generation dialog
+- Requires a Segmind API key (configured in Settings)
+- Generates cover art from the song's lyrics using AI image models
+- Supported Segmind models: Flux 1.1 Pro (default), SDXL 1.0, Segmind Vega
+- Generates multiple candidates (default 4) for the user to choose from
+- Selected image is saved and auto-fills the cover art path
 
 ### Upload Workflow
 1. Mark distribution as "Ready" (validates required fields)
@@ -281,6 +305,7 @@ Portable bundle export/import for syncing data across machines via cloud storage
 ### API Settings
 - Anthropic API key with show/hide toggle and connection test
 - AI model selection (Claude Sonnet / Opus)
+- Segmind API key with show/hide toggle and connection test (for AI cover art generation)
 
 ### Song Submission
 - Submission mode: Browser Automation or MusicGPT API (Direct)

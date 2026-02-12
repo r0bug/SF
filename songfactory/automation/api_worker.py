@@ -370,17 +370,57 @@ class MusicGptApiWorker(QThread):
                 self.progress_update.emit(f"Downloading '{title}'...")
                 file_path_1 = ""
                 file_path_2 = ""
+                actual_size_1 = 0
+                actual_size_2 = 0
+
+                from automation.download_manager import (
+                    DownloadManager as DM,
+                    DownloadVerificationError,
+                )
 
                 for version in (1, 2):
                     url = metadata.get(f"audio_url_{version}")
                     if url:
                         try:
                             path = dm.save_from_url(url, title, version)
+                            fsize = Path(path).stat().st_size
                             if version == 1:
                                 file_path_1 = str(path)
+                                actual_size_1 = fsize
                             else:
                                 file_path_2 = str(path)
+                                actual_size_2 = fsize
                             logger.info(f"API downloaded v{version}: {path}")
+                        except DownloadVerificationError as e:
+                            logger.warning(
+                                f"API download v{version} invalid audio: {e}"
+                            )
+                            # Try S3 fallback for this version
+                            S3_BASE = "https://lalals.s3.amazonaws.com/conversions/standard"
+                            cid_key = f"conversion_id_{version}"
+                            fallback_cid = metadata.get(cid_key) or (
+                                cid1 if version == 1 else cid2
+                            )
+                            if fallback_cid:
+                                fallback_url = f"{S3_BASE}/{fallback_cid}/{fallback_cid}.mp3"
+                                try:
+                                    path = dm.save_from_url(
+                                        fallback_url, title, version
+                                    )
+                                    fsize = Path(path).stat().st_size
+                                    if version == 1:
+                                        file_path_1 = str(path)
+                                        actual_size_1 = fsize
+                                    else:
+                                        file_path_2 = str(path)
+                                        actual_size_2 = fsize
+                                    logger.info(
+                                        f"API S3 fallback v{version}: {path}"
+                                    )
+                                except Exception as e2:
+                                    logger.warning(
+                                        f"API S3 fallback v{version} failed: {e2}"
+                                    )
                         except Exception as e:
                             logger.warning(f"API download v{version} failed: {e}")
 
@@ -393,6 +433,7 @@ class MusicGptApiWorker(QThread):
                         try:
                             path = dm.save_from_url(fallback_url, title, 1)
                             file_path_1 = str(path)
+                            actual_size_1 = Path(path).stat().st_size
                             logger.info(f"API S3 fallback download: {path}")
                         except Exception as e:
                             logger.warning(f"API S3 fallback failed: {e}")
@@ -413,6 +454,12 @@ class MusicGptApiWorker(QThread):
                 for key in metadata_cols:
                     if key in metadata:
                         update_kwargs[key] = metadata[key]
+
+                # Always use actual file sizes from disk
+                if actual_size_1:
+                    update_kwargs["file_size_1"] = actual_size_1
+                if actual_size_2:
+                    update_kwargs["file_size_2"] = actual_size_2
 
                 set_parts = []
                 values = []

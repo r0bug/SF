@@ -75,24 +75,38 @@ class LalalsDriver:
     def __init__(self, page: Page, context: BrowserContext):
         self.page = page
         self.context = context
+        from automation.selector_registry import SelectorRegistry
+        self._registry = SelectorRegistry()
 
     # ------------------------------------------------------------------
     # Selector helpers
     # ------------------------------------------------------------------
 
-    def _find_visible(self, selectors: list[str], *, timeout: int = 3000):
+    def _find_visible(self, selectors: list[str], *, timeout: int = 3000,
+                      group: str = ""):
         """Return the first visible locator matching any of *selectors*.
 
         Iterates through the selector list in order, returning the first
         locator whose element is visible within *timeout* ms.  Returns
         ``None`` if nothing matches.
+
+        If *group* is provided, uses the SelectorRegistry to remember
+        which selectors work and tries them first next time.
         """
+        if group:
+            self._registry.register_group(group, selectors)
+            selectors = self._registry.get_selectors(group)
+
         for sel in selectors:
             try:
                 loc = self.page.locator(sel).first
                 if loc.is_visible(timeout=timeout):
+                    if group:
+                        self._registry.promote(group, sel)
                     return loc
             except Exception:
+                if group:
+                    self._registry.demote(group, sel)
                 continue
         return None
 
@@ -265,6 +279,7 @@ class LalalsDriver:
                 "textarea",                           # fallback: first textarea
             ],
             timeout=5000,
+            group="prompt_textarea",
         )
 
         if textarea is None:
@@ -314,6 +329,7 @@ class LalalsDriver:
                 'button[aria-label="Lyrics"]',
             ],
             timeout=5000,
+            group="lyrics_toggle",
         )
 
         if lyrics_toggle is not None:
@@ -333,6 +349,7 @@ class LalalsDriver:
                 'textarea[maxlength="3000"]',
             ],
             timeout=5000,
+            group="lyrics_textarea",
         )
 
         if lyrics_area is None:
@@ -378,6 +395,7 @@ class LalalsDriver:
                 "button[aria-label*='send']",
             ],
             timeout=5000,
+            group="generate_button",
         )
 
         if generate_btn is None:
@@ -1139,20 +1157,16 @@ class LalalsDriver:
             '[data-testid="home"]',
         ]
 
-        for sel in selectors:
+        home_btn = self._find_visible(selectors, timeout=2000, group="home_nav")
+        if home_btn is not None:
+            home_btn.click()
+            self.page.wait_for_timeout(2000)
             try:
-                loc = self.page.locator(sel).first
-                if loc.is_visible(timeout=2000):
-                    loc.click()
-                    self.page.wait_for_timeout(2000)
-                    try:
-                        self.page.wait_for_load_state("networkidle", timeout=10000)
-                    except Exception:
-                        pass
-                    logger.info(f"Navigated via Home button ({sel})")
-                    return
+                self.page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
-                continue
+                pass
+            logger.info("Navigated via Home button")
+            return
 
         # Fallback: direct navigation
         logger.info("Home button not found — navigating directly")
@@ -1164,12 +1178,17 @@ class LalalsDriver:
         self.page.wait_for_timeout(3000)
 
     def _find_card_on_home(self, song_title: str, prompt: str = "",
-                           lyrics: str = "") -> "Locator | None":
+                           lyrics: str = "",
+                           task_id: str = "") -> "Locator | None":
         """Locate a ProjectItem card on the Home page.
 
         Lalals.com renders each song as a ``div[data-name="ProjectItem"]``
         containing the song title text.  We search through those cards
-        using multiple text-matching strategies.
+        using multiple matching strategies.
+
+        Priority 0: Exact match on ``data-project-id`` == task_id.
+        Priority 1-4: Text-based matching (title, prompt, lyrics).
+        Priority 5: Word overlap fallback.
 
         Returns the matching ProjectItem locator, or None.
         """
@@ -1178,6 +1197,21 @@ class LalalsDriver:
         logger.info(f"Found {count} ProjectItem cards on page")
         if count == 0:
             return None
+
+        # Priority 0: Exact match by data-project-id (most reliable)
+        if task_id:
+            for i in range(count):
+                card = cards.nth(i)
+                try:
+                    pid = card.get_attribute("data-project-id") or ""
+                    if pid == task_id:
+                        logger.info(
+                            f"Card #{i} matched by project_id={task_id}"
+                        )
+                        return card
+                except Exception:
+                    continue
+            logger.info(f"No card matched project_id={task_id}, falling back to text")
 
         # Build search needles in priority order
         needles: list[tuple[str, str]] = []
@@ -1270,7 +1304,8 @@ class LalalsDriver:
             return False
 
     def download_from_home(self, song_title: str, download_dir: str,
-                           prompt: str = "", lyrics: str = "") -> list[Path]:
+                           prompt: str = "", lyrics: str = "",
+                           task_id: str = "") -> list[Path]:
         """Download a song from the Home page via the three-dot menu.
 
         Finds the generation card matching *song_title* (falling back to
@@ -1282,6 +1317,7 @@ class LalalsDriver:
             download_dir: Base download directory.
             prompt: Optional prompt text for fallback matching.
             lyrics: Optional lyrics text for fallback matching.
+            task_id: Optional task UUID for exact data-project-id matching.
 
         Returns:
             List of saved file paths (may be empty on failure).
@@ -1290,7 +1326,8 @@ class LalalsDriver:
         dm = DownloadManager(download_dir)
 
         try:
-            card = self._find_card_on_home(song_title, prompt, lyrics)
+            card = self._find_card_on_home(song_title, prompt, lyrics,
+                                           task_id=task_id)
             if card is None:
                 self._capture_debug_screenshot("download_home_card_not_found")
                 logger.info(f"Card not found for '{song_title}'")
@@ -1334,7 +1371,8 @@ class LalalsDriver:
                 self.page.keyboard.press("Escape")
                 self.page.wait_for_timeout(500)
 
-                card2 = self._find_card_on_home(song_title, prompt, lyrics)
+                card2 = self._find_card_on_home(song_title, prompt, lyrics,
+                                                        task_id=task_id)
                 if card2 is not None and self._click_card_menu(card2):
                     dl2 = self.page.locator('text="Download"').first
                     if dl2.is_visible(timeout=1500):
