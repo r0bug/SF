@@ -8,7 +8,7 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 - **Lore Editor** — Manage world-building lore entries (people, places, events, themes, rules, general) with category filtering, bulk toggle controls, saveable presets, and lore-only export/import.
 - **Lore Discovery** — Search the web, summarize content with AI, and save results directly as lore entries.
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
-- **Song Library** — Browse, search, and filter songs by genre, status, or tag. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. User-defined song tags with colored chips, context-menu tagging, and a Manage Tags dialog. Error recovery via headless home-page download.
+- **Song Library** — Browse, search, and filter songs by genre, status, or tag. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. User-defined song tags with colored chips, context-menu tagging, and a Manage Tags dialog. Error recovery via headless home-page download. "Wrong Song" button deletes mismatched downloads and triggers re-download.
 - **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and disc burning via cdrdao/wodim.
 - **Distribution** — Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation. Includes release form, genre mapping, cover art validation/resize, AI cover art generation (Segmind API), AI disclosure, and upload queue with login/2FA support.
 - **Analytics** — Song statistics, status breakdown charts, and generation history.
@@ -137,7 +137,7 @@ songfactory/
     test_lalals_fixes.py   # Tests for browser integration bug fixes
     test_pipeline_diagnostics.py # Tests for diagnostic tool
     test_personal_bundle.py # Tests for personal data bundle export/import
-tests/                     # Main test suite (288 tests)
+tests/                     # Main test suite (293 tests)
 ```
 
 ## Database

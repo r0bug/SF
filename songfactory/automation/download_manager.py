@@ -4,6 +4,7 @@ import re
 import logging
 import urllib.request
 import urllib.error
+from datetime import date
 from pathlib import Path
 
 from automation.atomic_io import atomic_write_fn
@@ -47,47 +48,57 @@ class DownloadManager:
         text = text.strip('-')
         return text or "untitled"
 
-    def get_song_dir(self, song_title: str) -> Path:
+    def get_song_dir(self, song_title: str, date_prefix: str = "") -> Path:
         """Create and return a directory for this song's files.
 
-        Example: ~/Music/SongFactory/treasure-on-second-street/
+        Args:
+            song_title: The song title.
+            date_prefix: Date string prefix for the directory name.
+                When empty (default), uses today's date (YYYY-MM-DD).
+
+        Example: ~/Music/SongFactory/2026-02-12_treasure-on-second-street/
         """
         slug = self._slugify(song_title)
-        song_dir = self.base_dir / slug
+        prefix = date_prefix or date.today().isoformat()
+        song_dir = self.base_dir / f"{prefix}_{slug}"
         song_dir.mkdir(parents=True, exist_ok=True)
         return song_dir
 
-    def get_track_file_path(self, song_title: str, track_type: str, extension: str = ".mp3") -> Path:
+    def get_track_file_path(self, song_title: str, track_type: str, extension: str = ".mp3",
+                            date_prefix: str = "") -> Path:
         """Get the target file path for a specific track type.
 
         Args:
             song_title: The song title
             track_type: Track type label (e.g. "vocals", "instrumental", "full_song")
             extension: File extension including dot (e.g. ".mp3")
+            date_prefix: Date string prefix for the directory name.
 
         Returns:
-            Path like ~/Music/SongFactory/treasure-on-second-street/treasure-on-second-street_vocals.mp3
+            Path like ~/Music/SongFactory/2026-02-12_treasure-on-second-street/treasure-on-second-street_vocals.mp3
         """
         slug = self._slugify(song_title)
-        song_dir = self.get_song_dir(song_title)
+        song_dir = self.get_song_dir(song_title, date_prefix=date_prefix)
         # Sanitize track_type for filename
         safe_type = re.sub(r'[^\w]', '_', track_type.lower().strip())
         filename = f"{slug}_{safe_type}{extension}"
         return song_dir / filename
 
-    def get_file_path(self, song_title: str, version: int, extension: str = ".mp3") -> Path:
+    def get_file_path(self, song_title: str, version: int, extension: str = ".mp3",
+                      date_prefix: str = "") -> Path:
         """Get the target file path for a song version.
 
         Args:
             song_title: The song title
             version: Version number (1 or 2)
             extension: File extension including dot (e.g. ".mp3", ".wav")
+            date_prefix: Date string prefix for the directory name.
 
         Returns:
-            Path like ~/Music/SongFactory/treasure-on-second-street/treasure-on-second-street_v1.mp3
+            Path like ~/Music/SongFactory/2026-02-12_treasure-on-second-street/treasure-on-second-street_v1.mp3
         """
         slug = self._slugify(song_title)
-        song_dir = self.get_song_dir(song_title)
+        song_dir = self.get_song_dir(song_title, date_prefix=date_prefix)
         filename = f"{slug}_v{version}{extension}"
         return song_dir / filename
 
@@ -133,9 +144,9 @@ class DownloadManager:
 
         return target_path
 
-    def get_existing_files(self, song_title: str) -> list[Path]:
+    def get_existing_files(self, song_title: str, date_prefix: str = "") -> list[Path]:
         """Get list of already-downloaded files for a song."""
-        song_dir = self.get_song_dir(song_title)
+        song_dir = self.get_song_dir(song_title, date_prefix=date_prefix)
         if song_dir.exists():
             return sorted(song_dir.iterdir())
         return []

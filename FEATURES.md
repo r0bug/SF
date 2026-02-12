@@ -117,6 +117,7 @@ Browse, search, and manage all songs with automation controls.
 - Retry with exponential backoff on download failures
 
 ### Error Recovery
+- **Wrong Song** — Orange button in the detail panel and "Wrong Song — Re-download" context menu action. Deletes all downloaded files (file_path_1, file_path_2, vocals, instrumental), removes empty parent directories, sets status to "error", and triggers automatic re-download if a `task_id` exists. If no task_id, suggests using "Recover Error Songs" or "Recover from Home Page". Available only when a downloaded file exists.
 - **Recover Error Songs** — Batch button that launches a headless browser, navigates to lalals.com home page, and downloads songs in error status by matching card titles
 - **Recover from Home Page** — Right-click context menu option for individual songs without task_ids
 - **Multi-strategy card matching** — Matches songs on the lalals.com home page by title, title prefix, prompt prefix, lyrics prefix, or word overlap (lalals generates its own song titles that may differ from the database)
@@ -131,6 +132,7 @@ Browse, search, and manage all songs with automation controls.
 - **Size mismatch detection** — When an expected file size is provided, downloads differing by more than 5% are rejected
 - **Automatic cleanup** — Invalid files are deleted immediately after detection
 - **File size propagation** — `file_size_1` and `file_size_2` database columns are always populated from actual on-disk file sizes after every download path (API, browser, home page recovery)
+- **Date-prefixed download folders** — Downloads are organized into `~/Music/SongFactory/YYYY-MM-DD_song-title/` directories, making it easy to identify when files were downloaded. Re-downloads on a different day automatically get a new folder. Old songs with non-dated paths continue to work via stored absolute paths in the database.
 
 ### Self-Healing Selectors
 - **SelectorRegistry** — Persists CSS selector priority order to `~/.songfactory/selector_registry.json`

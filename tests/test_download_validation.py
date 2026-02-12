@@ -2,6 +2,7 @@
 
 import json
 import struct
+from datetime import date
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -403,3 +404,44 @@ class TestFileSizePopulation:
         path = dm.save_playwright_download(mock_download, "Test", 1)
         assert dm.last_download_size == len(content)
         assert path.exists()
+
+
+# ── TestDatePrefixedFolders ──────────────────────────────────────────
+
+
+class TestDatePrefixedFolders:
+    """Tests for date-prefixed download directory naming."""
+
+    def test_get_song_dir_includes_date(self, tmp_path):
+        """Directory name follows YYYY-MM-DD_slug pattern."""
+        dm = DownloadManager(str(tmp_path / "dl"))
+        song_dir = dm.get_song_dir("Treasure on Second Street", date_prefix="2026-02-12")
+        assert song_dir.name == "2026-02-12_treasure-on-second-street"
+        assert song_dir.exists()
+
+    def test_get_song_dir_custom_date_prefix(self, tmp_path):
+        """Explicit date_prefix is used verbatim."""
+        dm = DownloadManager(str(tmp_path / "dl"))
+        song_dir = dm.get_song_dir("My Song", date_prefix="2025-01-01")
+        assert song_dir.name == "2025-01-01_my-song"
+
+    def test_get_song_dir_default_is_today(self, tmp_path):
+        """Default (empty) date_prefix uses today's date."""
+        dm = DownloadManager(str(tmp_path / "dl"))
+        song_dir = dm.get_song_dir("Hello World")
+        today = date.today().isoformat()
+        assert song_dir.name == f"{today}_hello-world"
+
+    def test_get_file_path_with_date(self, tmp_path):
+        """Full file path includes date in directory component."""
+        dm = DownloadManager(str(tmp_path / "dl"))
+        fp = dm.get_file_path("Test Song", 1, date_prefix="2026-03-15")
+        assert "2026-03-15_test-song" in str(fp)
+        assert fp.name == "test-song_v1.mp3"
+
+    def test_get_track_file_path_with_date(self, tmp_path):
+        """Track file path includes date in directory component."""
+        dm = DownloadManager(str(tmp_path / "dl"))
+        fp = dm.get_track_file_path("Test Song", "vocals", date_prefix="2026-04-20")
+        assert "2026-04-20_test-song" in str(fp)
+        assert fp.name == "test-song_vocals.mp3"

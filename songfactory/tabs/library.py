@@ -297,6 +297,13 @@ class SongLibraryTab(BaseTab):
         self.copy_lyrics_btn = QPushButton("Copy Lyrics")
         btn_row.addWidget(self.copy_lyrics_btn)
 
+        self.wrong_song_btn = QPushButton("Wrong Song")
+        self.wrong_song_btn.setObjectName("wrongSongBtn")
+        self.wrong_song_btn.setToolTip(
+            "Delete downloaded files and re-download (wrong file was matched)"
+        )
+        btn_row.addWidget(self.wrong_song_btn)
+
         btn_row.addStretch()
 
         self.delete_btn = QPushButton("Delete")
@@ -445,6 +452,7 @@ class SongLibraryTab(BaseTab):
         self.process_this_btn.clicked.connect(self._process_single_song)
         self.copy_prompt_btn.clicked.connect(self._copy_prompt)
         self.copy_lyrics_btn.clicked.connect(self._copy_lyrics)
+        self.wrong_song_btn.clicked.connect(self._wrong_song)
         self.delete_btn.clicked.connect(self.delete_song)
         self.edit_tags_btn.clicked.connect(self._edit_song_tags)
 
@@ -973,6 +981,17 @@ class SongLibraryTab(BaseTab):
             )
             menu.addAction(recover_action)
 
+        # Wrong Song — Re-download (only if there's a downloaded file)
+        if has_file:
+            wrong_song_action = QAction("Wrong Song \u2014 Re-download", self)
+            wrong_song_action.setToolTip(
+                "Delete downloaded files and re-download (wrong file was matched)"
+            )
+            wrong_song_action.triggered.connect(
+                lambda checked, sid=song_id: self._context_wrong_song(sid)
+            )
+            menu.addAction(wrong_song_action)
+
         # Add to CD Project submenu
         cd_projects = self.db.get_all_cd_projects()
         if cd_projects:
@@ -1325,6 +1344,95 @@ class SongLibraryTab(BaseTab):
             self.queue_status_label.setText("Status: Re-download failed")
             QMessageBox.warning(
                 self, "Re-download Error", f"Error during re-download:\n\n{e}"
+            )
+
+    # ------------------------------------------------------------------
+    # Wrong Song — delete files and re-download
+    # ------------------------------------------------------------------
+
+    def _wrong_song(self):
+        """Detail panel button handler: wrong song for the selected song."""
+        if self.selected_song is None:
+            return
+        self._do_wrong_song(self.selected_song["id"])
+
+    def _context_wrong_song(self, song_id: int):
+        """Context menu handler: wrong song for a specific song_id."""
+        self._do_wrong_song(song_id)
+
+    def _do_wrong_song(self, song_id: int):
+        """Delete wrong downloaded files, set error status, and trigger re-download.
+
+        1. Confirm with user
+        2. Delete existing files from disk
+        3. Remove empty parent directory
+        4. Clear DB file fields + set status to error
+        5. If task_id exists → trigger re-download
+        6. If no task_id → suggest recovery options
+        """
+        song = self.db.get_song(song_id)
+        if not song:
+            return
+        title = song.get("title", "Untitled")
+
+        reply = QMessageBox.question(
+            self,
+            "Wrong Song",
+            f'Delete downloaded files for "{title}" and re-download?\n\n'
+            "This will remove the current audio files from disk and attempt "
+            "to download the correct version.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Collect file paths to delete
+        path_fields = ("file_path_1", "file_path_2", "file_path_vocals", "file_path_instrumental")
+        dirs_to_check = set()
+        for field in path_fields:
+            fp = song.get(field, "")
+            if fp and os.path.exists(fp):
+                try:
+                    dirs_to_check.add(os.path.dirname(fp))
+                    os.remove(fp)
+                except OSError:
+                    pass
+
+        # Remove empty parent directories
+        for d in dirs_to_check:
+            try:
+                if os.path.isdir(d) and not os.listdir(d):
+                    os.rmdir(d)
+            except OSError:
+                pass
+
+        # Clear DB fields and set error status
+        self.db.update_song(
+            song_id,
+            file_path_1="",
+            file_path_2="",
+            file_size_1=0,
+            file_size_2=0,
+            file_path_vocals="",
+            file_path_instrumental="",
+            status="error",
+            notes="Wrong song downloaded \u2014 re-download requested",
+        )
+
+        task_id = song.get("task_id")
+        if task_id:
+            self._refresh_after_edit(song_id)
+            self._context_redownload(song_id, task_id)
+        else:
+            self._refresh_after_edit(song_id)
+            QMessageBox.information(
+                self,
+                "No Task ID",
+                f'Files for "{title}" have been removed.\n\n'
+                "This song has no task_id, so automatic re-download is not possible.\n"
+                'Use "Recover Error Songs" or "Recover from Home Page" '
+                "(right-click menu) to re-download.",
             )
 
     # ------------------------------------------------------------------
@@ -1876,6 +1984,15 @@ class SongLibraryTab(BaseTab):
             }}
             QPushButton#requeueBtn:hover {{
                 background-color: #42A5F5;
+            }}
+
+            QPushButton#wrongSongBtn {{
+                background-color: #FF9800;
+                color: #000000;
+                border: none;
+            }}
+            QPushButton#wrongSongBtn:hover {{
+                background-color: #FFB74D;
             }}
 
             QPushButton#processQueueBtn {{
