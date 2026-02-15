@@ -40,6 +40,7 @@ class GenerateWorker(QThread):
         api_key: str,
         user_input: str,
         active_lore: list,
+        lore_text: str | None = None,
         genre_name: str | None = None,
         genre_prompt_template: str | None = None,
         style_notes: str | None = None,
@@ -49,6 +50,7 @@ class GenerateWorker(QThread):
         self._api_key = api_key
         self._user_input = user_input
         self._active_lore = active_lore
+        self._lore_text = lore_text
         self._genre_name = genre_name
         self._genre_prompt_template = genre_prompt_template
         self._style_notes = style_notes
@@ -59,6 +61,7 @@ class GenerateWorker(QThread):
             result = generator.generate_song(
                 user_input=self._user_input,
                 active_lore=self._active_lore,
+                lore_text=self._lore_text,
                 genre_name=self._genre_name,
                 genre_prompt_template=self._genre_prompt_template,
                 style_notes=self._style_notes if self._style_notes else None,
@@ -176,7 +179,32 @@ class SongCreatorTab(BaseTab):
         self._lore_container.setWidget(self._lore_inner)
         layout.addWidget(self._lore_container)
 
-        # 6. Generate button
+        # 6. Select Lore button — populates the preview below
+        self.select_lore_btn = QPushButton("Select Lore")
+        self.select_lore_btn.setStyleSheet(Theme.secondary_button_style())
+        self.select_lore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.select_lore_btn.clicked.connect(self._on_select_lore)
+        layout.addWidget(self.select_lore_btn)
+
+        # 7. Editable lore preview area (hidden until Select Lore is clicked)
+        self._lore_preview_label = QLabel("Lore Context (editable)")
+        self._lore_preview_label.setStyleSheet(
+            f"color: {Theme.TEXT}; font-weight: bold; font-size: 13px;"
+        )
+        self._lore_preview_label.setVisible(False)
+        layout.addWidget(self._lore_preview_label)
+
+        self._lore_preview = QTextEdit()
+        self._lore_preview.setPlaceholderText(
+            "Click 'Select Lore' to load selected lore entries here. "
+            "You can edit the text before generating."
+        )
+        self._lore_preview.setMinimumHeight(120)
+        self._lore_preview.setMaximumHeight(250)
+        self._lore_preview.setVisible(False)
+        layout.addWidget(self._lore_preview)
+
+        # 8. Generate button
         self.generate_btn = QPushButton("Generate Song")
         self.generate_btn.setStyleSheet(Theme.accent_button_style())
         self.generate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -499,6 +527,33 @@ class SongCreatorTab(BaseTab):
         return self._lore_id_to_category.get(lore_id, "general")
 
     # ------------------------------------------------------------------
+    # Lore preview
+    # ------------------------------------------------------------------
+
+    def _on_select_lore(self):
+        """Format selected lore entries and show them in the editable preview."""
+        selected = self._get_selected_lore()
+        if not selected:
+            self._lore_preview.setPlainText("")
+            self._lore_preview_label.setVisible(True)
+            self._lore_preview.setVisible(True)
+            QMessageBox.information(
+                self, "No Lore Selected",
+                "No lore entries are checked. The song will be generated "
+                "without lore context, or you can type lore directly into "
+                "the preview box.",
+            )
+            return
+
+        lore_block = "\n\n".join(
+            f"### {entry['title']}\n{entry['content']}"
+            for entry in selected
+        )
+        self._lore_preview.setPlainText(lore_block)
+        self._lore_preview_label.setVisible(True)
+        self._lore_preview.setVisible(True)
+
+    # ------------------------------------------------------------------
     # Generation workflow
     # ------------------------------------------------------------------
 
@@ -536,8 +591,14 @@ class SongCreatorTab(BaseTab):
         # 3. Gather style notes
         style_notes = self.style_input.text().strip() or None
 
-        # 4. Gather active lore based on checkbox state
-        active_lore = self._get_selected_lore()
+        # 4. Gather lore — use the editable preview text if visible,
+        #    otherwise fall back to checkbox selection
+        lore_text = None
+        active_lore = []
+        if self._lore_preview.isVisible():
+            lore_text = self._lore_preview.toPlainText().strip() or None
+        else:
+            active_lore = self._get_selected_lore()
 
         # 5. Show busy state
         self.generate_btn.setEnabled(False)
@@ -548,6 +609,7 @@ class SongCreatorTab(BaseTab):
             api_key=api_key,
             user_input=user_input,
             active_lore=active_lore,
+            lore_text=lore_text,
             genre_name=genre_name,
             genre_prompt_template=genre_prompt_template,
             style_notes=style_notes,

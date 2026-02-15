@@ -75,6 +75,7 @@ class SongGenerator:
         genre_name: Optional[str] = None,
         genre_prompt_template: Optional[str] = None,
         style_notes: Optional[str] = None,
+        lore_text: Optional[str] = None,
     ) -> dict:
         """
         Generate a song using the Anthropic API.
@@ -85,6 +86,8 @@ class SongGenerator:
             genre_name: Optional genre name if the user selected one.
             genre_prompt_template: Optional genre prompt template.
             style_notes: Optional style reference text.
+            lore_text: Optional pre-formatted lore text. When provided,
+                used directly instead of building from active_lore dicts.
 
         Returns:
             dict with keys: title, genre_label, prompt, lyrics.
@@ -92,7 +95,7 @@ class SongGenerator:
         Raises:
             SongGenerationError: On any failure during generation or parsing.
         """
-        system_prompt = self._build_system_prompt(active_lore)
+        system_prompt = self._build_system_prompt(active_lore, lore_text=lore_text)
         user_message = self._build_user_message(
             user_input, genre_name, genre_prompt_template, style_notes,
         )
@@ -131,9 +134,18 @@ class SongGenerator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_system_prompt(active_lore: list[dict]) -> str:
-        """Assemble the system prompt with concatenated lore entries."""
-        if active_lore:
+    def _build_system_prompt(
+        active_lore: list[dict],
+        lore_text: Optional[str] = None,
+    ) -> str:
+        """Assemble the system prompt with lore context.
+
+        If *lore_text* is provided (user-edited preview), it is used directly
+        as the lore block.  Otherwise the block is built from *active_lore* dicts.
+        """
+        if lore_text:
+            lore_block = lore_text
+        elif active_lore:
             lore_block = "\n\n".join(
                 f"### {entry['title']}\n{entry['content']}"
                 for entry in active_lore

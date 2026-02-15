@@ -17,6 +17,12 @@ The primary workflow tab for generating AI songs.
 - **Preset Dropdown** — Apply saved lore presets to quickly configure lore selections without modifying database active flags
 - Scroll area (350px max height) accommodates the grouped layout
 
+### Lore Preview
+- **Select Lore** button — Formats all checked lore entries and loads them into an editable preview area
+- **Editable preview** — Review, edit, add, or remove lore text before generation. The exact text in this box is sent as the lore context to the AI.
+- If no lore entries are checked, the preview opens empty with an informational message; you can type custom lore directly
+- When the preview is visible, Generate Song uses its contents; when hidden, it falls back to the checkbox selection
+
 ### Output Panel
 - **Generated Prompt** — Editable prompt field with character counter (300 char target for lalals.com)
 - **Generated Lyrics** — Editable lyrics with verse/chorus/bridge structure markers
