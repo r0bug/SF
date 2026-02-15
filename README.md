@@ -8,8 +8,8 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 - **Lore Editor** — Manage world-building lore entries (people, places, events, themes, rules, general) with category filtering, bulk toggle controls, saveable presets, and lore-only export/import.
 - **Lore Discovery** — Search the web, summarize content with AI, and save results directly as lore entries.
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
-- **Song Library** — Browse, search, and filter songs by genre, status, or tag. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. User-defined song tags with colored chips, context-menu tagging, and a Manage Tags dialog. Error recovery via headless home-page download. "Wrong Song" button deletes mismatched downloads and triggers re-download.
-- **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and disc burning via cdrdao/wodim.
+- **Song Library** — Browse, search, and filter songs by genre, status, or tag. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. User-defined song tags with colored chips, context-menu tagging, and a Manage Tags dialog. Inline rename via detail panel or context menu. Error recovery via headless home-page download. "Wrong Song" button deletes mismatched downloads and triggers re-download.
+- **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and cross-platform ISO export via pycdlib.
 - **Distribution** — Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation. Includes release form, genre mapping, cover art validation/resize, AI cover art generation (Segmind API), AI disclosure, and upload queue with login/2FA support.
 - **Analytics** — Song statistics, status breakdown charts, and generation history.
 - **Settings** — Configure API keys (Anthropic, MusicGPT, Segmind), lalals.com credentials, DistroKid credentials, browser automation paths, Xvfb virtual display, pipeline diagnostics, debug screenshots, database backup/restore, and personal data sync (Dropbox/Google Drive cloud sync with auto-export).
@@ -25,7 +25,7 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 | Cover Art Generation | Segmind API (Flux 1.1 Pro, SDXL, Vega) |
 | Distribution | DistroKid (browser automation) |
 | Browser Automation | Playwright |
-| CD Burning | cdrdao, wodim |
+| ISO Export | pycdlib (cross-platform) |
 | Web Search | DuckDuckGo Search |
 
 ## Installation
@@ -38,13 +38,21 @@ cd SF
 # Install dependencies
 pip install -r requirements.txt
 
+# Or install as a package (editable mode)
+pip install -e .
+
 # Install Playwright browsers (for lalals.com automation)
 playwright install chromium
 
 # Run the application
-cd songfactory
-python main.py
+python songfactory/main.py
+# or via entry point (if installed with pip install -e .)
+songfactory
 ```
+
+### Pre-built Binaries
+
+See [BUILD.md](BUILD.md) for instructions on building standalone executables for Linux, macOS, and Windows using PyInstaller.
 
 ## Configuration
 
@@ -85,7 +93,10 @@ songfactory/
   export_import.py         # JSON/CSV export, JSON import, personal bundle sync
   web_search.py            # DuckDuckGo web search integration
   lore_summarizer.py       # AI-powered content summarization for lore
+  platform_utils.py        # Cross-platform detection (Linux/macOS/Windows, frozen app)
   icon.svg                 # Application icon
+  icon.ico                 # Windows icon (multi-resolution)
+  icon.icns                # macOS icon
   tabs/
     base_tab.py            # BaseTab(QWidget) lifecycle: _init_ui, _connect_signals, refresh, cleanup
     creator.py             # Song Creator tab — grouped lore, presets, generation
@@ -129,15 +140,22 @@ songfactory/
     network_sniffer.py     # Network traffic debugging tool
     chrome_bridge.py       # File-based Chrome extension protocol
     audio_converter.py     # Audio format conversion for CD burning
-    cd_art_generator.py    # CD cover/disc art generation
-    cd_burn_worker.py      # CD burning worker thread (cdrdao/wodim)
+    cd_art_generator.py    # CD cover/disc art generation (platform-aware fonts)
+    iso_builder.py         # Cross-platform ISO image builder (pycdlib)
     data_session_builder.py # CD-Extra data session builder
-    toc_generator.py       # CD TOC file generator
   tests/
     test_lalals_fixes.py   # Tests for browser integration bug fixes
     test_pipeline_diagnostics.py # Tests for diagnostic tool
     test_personal_bundle.py # Tests for personal data bundle export/import
-tests/                     # Main test suite (293 tests)
+pyproject.toml             # Project metadata and pip install config
+songfactory.spec           # PyInstaller build spec
+scripts/
+  build_linux.sh           # Linux build script (+ optional AppImage)
+  build_macos.sh           # macOS build script (+ DMG)
+  build_windows.bat        # Windows build script
+  convert_icons.py         # SVG → ICO/ICNS icon converter
+BUILD.md                   # Build instructions for all platforms
+tests/                     # Main test suite (311 tests)
 ```
 
 ## Database

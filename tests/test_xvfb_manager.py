@@ -1,6 +1,8 @@
 """Tests for the Xvfb manager."""
 
 import os
+from unittest.mock import patch
+
 from automation.xvfb_manager import XvfbManager
 
 
@@ -21,3 +23,17 @@ def test_default_display_is_none():
 def test_explicit_display():
     mgr = XvfbManager(display=":42")
     assert mgr.display == ":42"
+
+
+def test_xvfb_not_available_on_non_linux():
+    """When supports_xvfb() returns False, is_available() should be False."""
+    with patch("automation.xvfb_manager.supports_xvfb", return_value=False):
+        assert XvfbManager.is_available() is False
+
+
+def test_xvfb_start_skips_on_non_linux():
+    """When supports_xvfb() returns False, start() should return empty string."""
+    mgr = XvfbManager()
+    with patch("automation.xvfb_manager.supports_xvfb", return_value=False):
+        result = mgr.start()
+        assert result == ""

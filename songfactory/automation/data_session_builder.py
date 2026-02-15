@@ -7,11 +7,19 @@ Pure functions, no QThread.
 """
 
 import os
+import sys
 import shutil
 from pathlib import Path
 
 
-SONGFACTORY_DIR = Path(__file__).resolve().parent.parent
+def _get_songfactory_dir() -> Path:
+    """Return the songfactory source directory, handling frozen bundles."""
+    if getattr(sys, 'frozen', False):
+        return Path(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)))
+    return Path(__file__).resolve().parent.parent
+
+
+SONGFACTORY_DIR = _get_songfactory_dir()
 CD_PROJECTS_DIR = Path.home() / ".songfactory" / "cd_projects"
 
 

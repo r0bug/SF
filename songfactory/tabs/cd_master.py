@@ -40,7 +40,7 @@ class CDMasterTab(BaseTab):
         self._current_project = None
         self._current_tracks = []
         self._convert_worker = None
-        self._burn_worker = None
+        self._iso_worker = None
         super().__init__(db, parent)
 
     # ==================================================================
@@ -239,18 +239,10 @@ class CDMasterTab(BaseTab):
         self.convert_btn.clicked.connect(self._convert_all)
         action_row.addWidget(self.convert_btn)
 
-        self.gen_toc_btn = QPushButton("Generate TOC")
-        self.gen_toc_btn.clicked.connect(self._generate_toc)
-        action_row.addWidget(self.gen_toc_btn)
-
-        self.sim_burn_btn = QPushButton("Simulate Burn")
-        self.sim_burn_btn.clicked.connect(self._simulate_burn)
-        action_row.addWidget(self.sim_burn_btn)
-
-        self.burn_btn = QPushButton("Burn CD-Extra")
-        self.burn_btn.setObjectName("burnBtn")
-        self.burn_btn.clicked.connect(self._burn_disc)
-        action_row.addWidget(self.burn_btn)
+        self.export_iso_btn = QPushButton("Export ISO")
+        self.export_iso_btn.setObjectName("exportIsoBtn")
+        self.export_iso_btn.clicked.connect(self._export_iso)
+        action_row.addWidget(self.export_iso_btn)
 
         center_layout.addLayout(action_row)
 
@@ -422,11 +414,11 @@ class CDMasterTab(BaseTab):
                 background-color: #2196F3; color: #FFFFFF; border: none;
             }}
             QPushButton#convertBtn:hover {{ background-color: #42A5F5; }}
-            QPushButton#burnBtn {{
-                background-color: {Theme.ERROR}; color: #FFFFFF; border: none;
+            QPushButton#exportIsoBtn {{
+                background-color: {Theme.SUCCESS}; color: #FFFFFF; border: none;
                 font-size: 13px; padding: 8px 16px;
             }}
-            QPushButton#burnBtn:hover {{ background-color: #FF5544; }}
+            QPushButton#exportIsoBtn:hover {{ background-color: #66BB6A; }}
             QPushButton#saveMetaBtn {{
                 background-color: {Theme.SUCCESS}; color: #FFFFFF; border: none;
             }}
@@ -997,165 +989,99 @@ class CDMasterTab(BaseTab):
         self.status_label.setText("Conversion complete.")
 
     # ==================================================================
-    # TOC Generation
+    # ISO Export
     # ==================================================================
 
-    def _generate_toc(self):
-        """Generate the TOC file and show it or save it."""
+    def _export_iso(self):
+        """Export the current project as an ISO image file."""
         if not self._current_project or not self._current_tracks:
+            QMessageBox.information(
+                self, "No Project",
+                "Select a project with tracks before exporting.",
+            )
             return
 
-        from automation.toc_generator import generate_toc
+        if self._iso_worker and self._iso_worker.isRunning():
+            QMessageBox.information(self, "Busy", "ISO build already in progress.")
+            return
 
-        toc_content = generate_toc(self._current_project, self._current_tracks)
-
-        # Save to project dir
-        pid = self._current_project["id"]
-        project_dir = CD_PROJECTS_DIR / str(pid)
-        project_dir.mkdir(parents=True, exist_ok=True)
-        toc_path = project_dir / "project.toc"
-        toc_path.write_text(toc_content, encoding="utf-8")
-
-        QMessageBox.information(
-            self,
-            "TOC Generated",
-            f"TOC file saved to:\n{toc_path}\n\n"
-            f"Contains {len(self._current_tracks)} tracks with CD-TEXT.",
+        # Suggest filename from album title
+        album = (
+            self._current_project.get("album_title")
+            or self._current_project.get("name", "CD")
         )
-        self.status_label.setText(f"TOC saved: {toc_path}")
+        safe_name = "".join(
+            c if c.isalnum() or c in (" ", "-", "_") else "_" for c in album
+        ).strip()
+        default_name = f"{safe_name}.iso" if safe_name else "cd_project.iso"
 
-    # ==================================================================
-    # Burn
-    # ==================================================================
-
-    def _simulate_burn(self):
-        self._start_burn(simulate=True)
-
-    def _burn_disc(self):
-        """Start a real CD-Extra burn."""
-        if not self._current_project or not self._current_tracks:
-            return
-
-        # Check total duration
-        total = sum(t.get("duration_seconds", 0) for t in self._current_tracks)
-        if total > CD_MAX_SECONDS:
-            QMessageBox.warning(
-                self,
-                "Over Capacity",
-                f"Total duration ({int(total)//60}:{int(total)%60:02d}) exceeds "
-                f"80:00 CD limit.\n\nRemove tracks to fit.",
-            )
-            return
-
-        # Check all tracks have WAV
-        missing_wav = [
-            t for t in self._current_tracks
-            if not (t.get("wav_path") and os.path.exists(t["wav_path"]))
-        ]
-        if missing_wav:
-            QMessageBox.warning(
-                self,
-                "Tracks Not Converted",
-                f"{len(missing_wav)} track(s) need WAV conversion first.\n\n"
-                "Click 'Convert All to WAV' before burning.",
-            )
-            return
-
-        # Check CD drive
-        if not os.path.exists("/dev/sr0"):
-            QMessageBox.warning(
-                self,
-                "No CD Drive",
-                "CD drive not found at /dev/sr0.\n\n"
-                "Insert a blank CD-R and ensure the drive is connected.",
-            )
-            return
-
-        reply = QMessageBox.question(
+        output_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Burn CD-Extra",
-            "Insert a blank CD-R and click Yes to begin burning.\n\n"
-            "This will write audio (Session 1) and data (Session 2).",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            "Export ISO Image",
+            str(Path.home() / default_name),
+            "ISO Images (*.iso);;All Files (*)",
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not output_path:
             return
-
-        audio_only = not self.include_data_cb.isChecked()
-        self._start_burn(simulate=False, audio_only=audio_only)
-
-    def _start_burn(self, simulate: bool = False, audio_only: bool = False):
-        """Start the burn worker."""
-        if not self._current_project or not self._current_tracks:
-            return
-
-        if self._burn_worker and self._burn_worker.isRunning():
-            QMessageBox.information(self, "Busy", "Burn already in progress.")
-            return
-
-        from automation.cd_burn_worker import CDBurnWorker
 
         # Gather songs for data session
         songs = []
-        if not audio_only:
-            for track in self._current_tracks:
-                sid = track.get("song_id")
-                if sid:
-                    song = self.db.get_song(sid)
-                    if song:
-                        songs.append(song)
+        for track in self._current_tracks:
+            sid = track.get("song_id")
+            if sid:
+                song = self.db.get_song(sid)
+                if song:
+                    songs.append(song)
 
-        self._burn_worker = CDBurnWorker(
+        from automation.iso_builder import ISOBuildWorker
+
+        self._iso_worker = ISOBuildWorker(
             project=self._current_project,
             tracks=self._current_tracks,
             songs=songs,
-            simulate=simulate,
-            audio_only=audio_only,
+            output_path=output_path,
         )
-        self.register_worker(self._burn_worker)
-        self._burn_worker.burn_progress.connect(self._on_burn_progress)
-        self._burn_worker.burn_completed.connect(self._on_burn_completed)
-        self._burn_worker.burn_error.connect(self._on_burn_error)
+        self.register_worker(self._iso_worker)
+        self._iso_worker.build_progress.connect(self._on_iso_progress)
+        self._iso_worker.build_completed.connect(self._on_iso_completed)
+        self._iso_worker.build_error.connect(self._on_iso_error)
 
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # indeterminate
-        self.burn_btn.setEnabled(False)
-        self.sim_burn_btn.setEnabled(False)
+        self.export_iso_btn.setEnabled(False)
+        self.status_label.setText("Building ISO...")
+        self.db.update_cd_project(self._current_project["id"], status="building")
+        self._iso_worker.start()
 
-        label = "Simulating" if simulate else "Burning"
-        self.status_label.setText(f"{label}...")
-        self.db.update_cd_project(self._current_project["id"], status="burning")
-        self._burn_worker.start()
-
-    def _on_burn_progress(self, msg: str):
+    def _on_iso_progress(self, msg: str):
         self.status_label.setText(msg)
 
-    def _on_burn_completed(self):
-        self.burn_btn.setEnabled(True)
-        self.sim_burn_btn.setEnabled(True)
+    def _on_iso_completed(self, iso_path: str):
+        self.export_iso_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self._burn_worker = None
+        self._iso_worker = None
 
         if self._current_project:
-            self.db.update_cd_project(self._current_project["id"], status="burned")
+            self.db.update_cd_project(self._current_project["id"], status="exported")
             self.refresh_projects()
 
-        self.status_label.setText("Burn complete!")
-        QMessageBox.information(self, "Success", "CD burn completed successfully!")
+        self.status_label.setText(f"ISO exported: {iso_path}")
+        QMessageBox.information(
+            self, "ISO Exported",
+            f"ISO image created successfully:\n\n{iso_path}",
+        )
 
-    def _on_burn_error(self, error: str):
-        self.burn_btn.setEnabled(True)
-        self.sim_burn_btn.setEnabled(True)
+    def _on_iso_error(self, error: str):
+        self.export_iso_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self._burn_worker = None
+        self._iso_worker = None
 
         if self._current_project:
             self.db.update_cd_project(self._current_project["id"], status="error")
             self.refresh_projects()
 
-        self.status_label.setText(f"Burn error: {error[:80]}")
-        QMessageBox.warning(self, "Burn Error", error)
+        self.status_label.setText(f"ISO error: {error[:80]}")
+        QMessageBox.warning(self, "ISO Build Error", error)
 
     # ==================================================================
     # Art Generation

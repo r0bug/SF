@@ -97,7 +97,11 @@ Browse, search, and manage all songs with automation controls.
 ### Song Table
 - Colored status badges per song
 - Tag chips column showing up to 4 colored tag chips per song with "+N" overflow
-- Expandable detail area for viewing/editing individual songs
+- Expandable detail area for viewing/editing individual songs (including inline title editing)
+
+### Song Rename
+- **Detail panel** — Title is an editable text field; changes saved with the Save button
+- **Context menu** — Right-click → Rename opens an input dialog for quick title changes
 
 ### Song Tags
 - **6 built-in tags**: Favorite, Released, Needs Lyrics, Halloween, Love Song, Instrumental
@@ -167,7 +171,7 @@ Browse, search, and manage all songs with automation controls.
 
 ## CD Master
 
-Create audio CD projects with full CD-TEXT metadata and CD-Extra data sessions.
+Create audio CD projects with full CD-TEXT metadata and cross-platform ISO export.
 
 ### Project Management
 - Create, duplicate, and delete CD projects
@@ -183,11 +187,12 @@ Create audio CD projects with full CD-TEXT metadata and CD-Extra data sessions.
 - Include data session (CD-Extra) with selectable content: source files, lyrics, MP3s
 - Cover art, disc art, and back art with generate/import options
 
-### Burning
+### ISO Export
+- **Export ISO** — Creates a standards-compliant ISO 9660 image (Level 4 + Joliet + Rock Ridge) using pycdlib (pure Python, cross-platform)
 - Audio conversion to WAV via ffmpeg
-- TOC file generation for cdrdao
-- CD-Extra data session building via wodim
-- Progress tracking during burn
+- Data session includes MP3s, lyrics text files, album info, and optional Song Factory source code
+- File dialog with suggested filename from album title
+- Progress tracking during build with file-by-file status
 
 ---
 
@@ -231,7 +236,9 @@ All 23 Song Factory genres are mapped to DistroKid's fixed genre list:
 - Requires a Segmind API key (configured in Settings)
 - Generates cover art from the song's lyrics using AI image models
 - Supported Segmind models: Flux 1.1 Pro (default), SDXL 1.0, Segmind Vega
+- Generates at 1024x1024 resolution for speed, auto-resized to 3000x3000 for distribution
 - Generates multiple candidates (default 4) for the user to choose from
+- WEBP responses from Segmind are automatically converted to PNG via Pillow for Qt compatibility
 - Selected image is saved and auto-fills the cover art path
 
 ### Upload Workflow
@@ -358,3 +365,31 @@ Automation errors are categorized for actionable user messages:
 - **Backup Now** — Creates a timestamped copy of the database in the download directory using SQLite's online backup API (safe while the app is running)
 - **Restore from Backup** — Lists available backups (newest first with date and size), or browse for a `.db` file manually. Creates a safety copy (`songfactory_pre_restore.db`) before overwriting.
 - **Startup Detection** — On fresh install (no user-created songs), automatically scans the download directory for backups and offers to restore the newest one. This allows backups stored alongside music files to travel to a new machine.
+
+---
+
+## Cross-Platform Support
+
+Song Factory runs on Linux, macOS, and Windows with platform-aware behavior.
+
+### Platform Detection (`platform_utils.py`)
+- `is_linux()`, `is_macos()`, `is_windows()` — Platform detection
+- `is_frozen()` — PyInstaller frozen bundle detection
+- `get_resource_dir()` — Returns `sys._MEIPASS` when frozen, source dir otherwise
+- `get_font_search_paths()` — OS-specific font paths for CD art generation
+- `supports_xvfb()` — True only on Linux
+
+### Platform-Specific Behavior
+- **Xvfb** — Virtual display manager auto-skips on non-Linux; checkbox hidden in Settings
+- **CD art fonts** — Finds Liberation/DejaVu on Linux, Helvetica/Arial on macOS, Arial/Calibri/Segoe on Windows
+- **ISO export** — Uses pycdlib (pure Python) instead of platform-specific CD burning tools
+- **Frozen app support** — `main.py` and `data_session_builder.py` handle PyInstaller paths
+
+### PyInstaller Packaging
+- `songfactory.spec` — Build configuration with platform-specific icons
+- `scripts/build_linux.sh` — Linux build with optional AppImage
+- `scripts/build_macos.sh` — macOS build with .app bundle and .dmg
+- `scripts/build_windows.bat` — Windows build
+- `scripts/convert_icons.py` — Generates .ico (Windows) and .icns (macOS) from SVG
+- `pyproject.toml` — Enables `pip install -e .` with `songfactory` entry point
+- See [BUILD.md](BUILD.md) for full build instructions

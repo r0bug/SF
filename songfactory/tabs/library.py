@@ -228,11 +228,14 @@ class SongLibraryTab(BaseTab):
         detail_layout.setContentsMargins(10, 10, 10, 10)
         detail_layout.setSpacing(8)
 
-        self.detail_title_label = QLabel()
-        self.detail_title_label.setStyleSheet(
+        self.detail_title_edit = QLineEdit()
+        self.detail_title_edit.setStyleSheet(
             f"font-size: 14px; font-weight: bold; color: {Theme.ACCENT};"
+            f"background-color: {Theme.BG}; border: 1px solid #555555;"
+            "border-radius: 4px; padding: 4px 8px;"
         )
-        detail_layout.addWidget(self.detail_title_label)
+        self.detail_title_edit.setPlaceholderText("Song title...")
+        detail_layout.addWidget(self.detail_title_edit)
 
         # Prompt section
         prompt_label = QLabel("Prompt")
@@ -948,6 +951,13 @@ class SongLibraryTab(BaseTab):
             f"QMenu::item:selected {{ background-color: {Theme.ACCENT}; color: #000000; }}"
         )
 
+        # Rename
+        rename_action = QAction("Rename", self)
+        rename_action.triggered.connect(
+            lambda checked, sid=song_id, t=title: self._context_rename(sid, t)
+        )
+        menu.addAction(rename_action)
+
         # Queue for Processing
         queue_action = QAction("Queue for Processing", self)
         queue_action.triggered.connect(
@@ -1101,6 +1111,21 @@ class SongLibraryTab(BaseTab):
             "Added to CD",
             f'"{title}" added to "{proj_name}" as track {next_num}.',
         )
+
+    def _context_rename(self, song_id: int, current_title: str):
+        """Context menu action: rename a song via input dialog."""
+        new_title, ok = QInputDialog.getText(
+            self, "Rename Song", "New title:", text=current_title,
+        )
+        if not ok or not new_title.strip():
+            return
+        new_title = new_title.strip()
+        if new_title == current_title:
+            return
+        updated = self.db.update_song(song_id, title=new_title)
+        if updated:
+            event_bus.songs_changed.emit()
+            self._refresh_after_edit(song_id)
 
     def _context_queue_song(self, song_id: int):
         """Context menu action: set a song's status to 'queued'."""
@@ -2384,9 +2409,7 @@ class SongLibraryTab(BaseTab):
             return
 
         self.selected_song = fresh
-        self.detail_title_label.setText(
-            f"{fresh.get('title', 'Untitled')}  [{fresh.get('status', '')}]"
-        )
+        self.detail_title_edit.setText(fresh.get("title", "Untitled"))
         self.prompt_edit.setPlainText(fresh.get("prompt") or "")
         self.lyrics_edit.setPlainText(fresh.get("lyrics") or "")
         self._update_detail_tags(fresh["id"])
@@ -2402,11 +2425,17 @@ class SongLibraryTab(BaseTab):
             return
 
         song_id = self.selected_song["id"]
+        new_title = self.detail_title_edit.text().strip()
         new_prompt = self.prompt_edit.toPlainText()
         new_lyrics = self.lyrics_edit.toPlainText()
 
+        if not new_title:
+            QMessageBox.warning(self, "Invalid Title", "Song title cannot be empty.")
+            return
+
         updated = self.db.update_song(
             song_id,
+            title=new_title,
             prompt=new_prompt,
             lyrics=new_lyrics,
         )

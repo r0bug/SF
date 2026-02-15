@@ -113,7 +113,7 @@ class ArtPromptWorker(QThread):
 class ImageGenWorker(QThread):
     """Generate images via Segmind API."""
 
-    image_ready = pyqtSignal(int, QPixmap, bytes)
+    image_ready = pyqtSignal(int, bytes)  # index, raw PNG/JPEG bytes
     error = pyqtSignal(str)
     finished_all = pyqtSignal()
 
@@ -133,6 +133,7 @@ class ImageGenWorker(QThread):
 
     def run(self):
         from automation.image_generator import SegmindImageGenerator, ImageGenerationError
+        import io
 
         gen = SegmindImageGenerator(api_key=self._api_key, model=self._model)
 
@@ -147,17 +148,25 @@ class ImageGenWorker(QThread):
                     count=1,
                 )
                 raw = results[0]
-                img = QImage()
-                img.loadFromData(raw)
-                if img.isNull():
-                    self.error.emit(f"Image {i + 1}: received invalid image data")
-                    continue
-                pixmap = QPixmap.fromImage(img)
-                self.image_ready.emit(i, pixmap, raw)
+                logger.info("Image %d/%d received: %d bytes", i + 1, self._count, len(raw))
+                # Segmind returns WEBP which Qt may not support;
+                # convert everything to PNG via Pillow for safety.
+                try:
+                    from PIL import Image as PILImage
+                    pil_img = PILImage.open(io.BytesIO(raw))
+                    buf = io.BytesIO()
+                    pil_img.save(buf, format="PNG")
+                    raw = buf.getvalue()
+                    logger.info("Image %d/%d converted to PNG: %d bytes", i + 1, self._count, len(raw))
+                except Exception as conv_exc:
+                    logger.warning("Image %d/%d: Pillow conversion failed: %s", i + 1, self._count, conv_exc)
+                self.image_ready.emit(i, raw)
             except ImageGenerationError as exc:
+                logger.error("Image generation error: %s", exc)
                 self.error.emit(str(exc))
                 break
             except Exception as exc:
+                logger.error("Image %d/%d failed: %s", i + 1, self._count, exc)
                 self.error.emit(f"Image {i + 1} failed: {exc}")
 
         self.finished_all.emit()
@@ -391,8 +400,8 @@ class CoverArtDialog(QDialog):
             api_key=segmind_key,
             prompt=prompt,
             model=model_id,
-            width=3000,
-            height=3000,
+            width=1024,
+            height=1024,
             count=count,
         )
         self._image_worker.image_ready.connect(self._on_image_received)
@@ -400,8 +409,15 @@ class CoverArtDialog(QDialog):
         self._image_worker.finished_all.connect(self._on_images_done)
         self._image_worker.start()
 
-    def _on_image_received(self, index: int, pixmap: QPixmap, raw_bytes: bytes):
+    def _on_image_received(self, index: int, raw_bytes: bytes):
         if index < len(self._image_labels):
+            img = QImage()
+            img.loadFromData(raw_bytes)
+            if img.isNull():
+                logger.warning("Image %d: QImage failed to load %d bytes", index + 1, len(raw_bytes))
+                self._image_labels[index].setText("Load failed")
+                return
+            pixmap = QPixmap.fromImage(img)
             self._image_labels[index].set_image(pixmap, raw_bytes)
             self._image_labels[index].setText("")
             self.status_label.setText(f"Received image {index + 1}...")

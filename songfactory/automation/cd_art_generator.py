@@ -31,13 +31,9 @@ DEFAULT_BG = "#2b2b2b"
 DEFAULT_TEXT = "#E8A838"
 DEFAULT_SUBTLE = "#888888"
 
-# Font search paths
-_FONT_PATHS = [
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-]
+# Font search paths (platform-aware)
+from platform_utils import get_font_search_paths
+_FONT_PATHS = get_font_search_paths()
 
 
 def _load_font(size: int, bold: bool = False) -> "ImageFont.FreeTypeFont":

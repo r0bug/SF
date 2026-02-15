@@ -18,6 +18,8 @@ import logging
 import shutil
 import subprocess
 
+from platform_utils import supports_xvfb
+
 logger = logging.getLogger("songfactory.automation")
 
 
@@ -59,11 +61,15 @@ class XvfbManager:
         """Start Xvfb subprocess and set the DISPLAY environment variable.
 
         Returns:
-            The display string (e.g. ":99").
+            The display string (e.g. ":99"), or empty string if not applicable.
 
         Raises:
             RuntimeError: If Xvfb is not available or fails to start.
         """
+        if not supports_xvfb():
+            logger.info("Xvfb not applicable on this platform, skipping")
+            return ""
+
         if not self.is_available():
             raise RuntimeError("Xvfb is not installed or not on PATH")
 
@@ -123,4 +129,6 @@ class XvfbManager:
     @staticmethod
     def is_available() -> bool:
         """Check if Xvfb is installed on the system."""
+        if not supports_xvfb():
+            return False
         return shutil.which("Xvfb") is not None

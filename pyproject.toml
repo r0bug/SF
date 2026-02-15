@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "songfactory"
+version = "2.2.0"
+description = "AI-powered song creation pipeline by Yakima Finds"
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.6.0",
+    "anthropic>=0.39.0",
+    "playwright>=1.40.0",
+    "duckduckgo-search>=7.0.0",
+    "requests>=2.28.0",
+    "Pillow>=10.0.0",
+    "pycdlib>=1.14.0",
+    "keyring>=24.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0", "pyinstaller>=6.0.0"]
+
+[project.scripts]
+songfactory = "songfactory.main:main"

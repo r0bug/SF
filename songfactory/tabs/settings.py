@@ -326,6 +326,10 @@ class SettingsTab(BaseTab):
         )
         auto_form.addRow("", self.xvfb_checkbox)
 
+        from platform_utils import supports_xvfb
+        if not supports_xvfb():
+            self.xvfb_checkbox.setVisible(False)
+
         self.auto_group.setLayout(auto_form)
         root.addWidget(self.auto_group)
 
