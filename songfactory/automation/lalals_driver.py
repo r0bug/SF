@@ -819,132 +819,181 @@ class LalalsDriver:
 
         return paths
 
-    def fetch_fresh_urls(self, task_id: str, auth_token: str = "",
-                         conversion_id_1: str = "", conversion_id_2: str = "") -> dict:
-        """Fetch status and fresh download URLs via the documented byId endpoint.
+    def poll_project_status(
+        self,
+        user_id: str,
+        conversion_id_1: str = "",
+        conversion_id_2: str = "",
+        auth_token: str = "",
+    ) -> dict:
+        """Poll lalals project status and return download URLs when ready.
 
-        Documented endpoint:
-            GET https://api.musicgpt.com/api/public/v1/byId
-                ?conversionType=MUSIC_AI&task_id={task_id}
-
-        Response on COMPLETED:
-            {success: true, conversion: {task_id, status, audio_url, ...}}
-
-        Also constructs direct S3 URLs from conversion_ids as fallback:
-            https://lalals.s3.amazonaws.com/conversions/{conversion_id}.mp3
+        Calls ``POST devapi.lalals.com/user/{uid}/projects`` (the same
+        endpoint the lalals.com frontend uses) to get project status and
+        download URLs.
 
         Args:
-            task_id: The MusicGPT task UUID.
-            auth_token: Authorization header value captured during submit.
-            conversion_id_1: First conversion UUID (for S3 URL fallback).
-            conversion_id_2: Second conversion UUID (for S3 URL fallback).
+            user_id: Lalals user UUID.
+            conversion_id_1: First conversion UUID (Version 1).
+            conversion_id_2: Second conversion UUID (Version 2).
+            auth_token: Authorization header value.
 
         Returns:
-            dict with metadata (audio_url_1, audio_url_2, status, etc).
+            dict with keys: status, conversion_id_1, conversion_id_2,
+            audio_url_1, audio_url_2, task_id, track_name, and any
+            other metadata from the project records.
         """
-        logger.info(f"Fetching fresh URLs for task_id={task_id}")
+        logger.info(
+            f"Polling project status (uid={user_id[:12]}..., "
+            f"cid1={conversion_id_1[:12]}..., cid2={conversion_id_2[:12]}...)"
+        )
 
         js = """
         async (args) => {
-            const { taskId, authToken, cid1, cid2 } = args;
-            const headers = {};
+            const { userId, authToken } = args;
+            const headers = {
+                'Content-Type': 'application/json',
+            };
             if (authToken) {
                 headers['Authorization'] = authToken;
             }
-
-            // Strategy 1: byId with task_id (documented endpoint)
-            const byIdUrl = `https://api.musicgpt.com/api/public/v1/byId?conversionType=MUSIC_AI&task_id=${taskId}`;
             try {
-                const resp = await fetch(byIdUrl, {
-                    headers,
-                    credentials: 'include'
-                });
-                if (resp.ok) {
-                    const data = await resp.json();
-                    if (data && data.success !== false) {
-                        return { source: 'byId_task', data: data };
+                const resp = await fetch(
+                    `https://devapi.lalals.com/user/${userId}/projects`,
+                    {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify({
+                            page: 1, limit: 20,
+                            includeFailedProjects: true,
+                        }),
                     }
-                }
+                );
+                if (!resp.ok) return { error: `HTTP ${resp.status}` };
+                return await resp.json();
             } catch (e) {
-                console.log('byId task_id failed:', e.message);
+                return { error: e.message };
             }
-
-            // Strategy 2: byId with conversion_id_1
-            if (cid1) {
-                try {
-                    const url = `https://api.musicgpt.com/api/public/v1/byId?conversionType=MUSIC_AI&conversion_id=${cid1}`;
-                    const resp = await fetch(url, { headers, credentials: 'include' });
-                    if (resp.ok) {
-                        const data = await resp.json();
-                        if (data && data.success !== false) {
-                            // Also try cid2
-                            let data2 = null;
-                            if (cid2) {
-                                try {
-                                    const url2 = `https://api.musicgpt.com/api/public/v1/byId?conversionType=MUSIC_AI&conversion_id=${cid2}`;
-                                    const resp2 = await fetch(url2, { headers, credentials: 'include' });
-                                    if (resp2.ok) data2 = await resp2.json();
-                                } catch (e) {}
-                            }
-                            return { source: 'byId_cid', data: data, data2: data2 };
-                        }
-                    }
-                } catch (e) {
-                    console.log('byId conversion_id failed:', e.message);
-                }
-            }
-
-            return null;
         }
         """
 
         try:
             result = self.page.evaluate(js, {
-                "taskId": task_id,
+                "userId": user_id,
                 "authToken": auth_token,
-                "cid1": conversion_id_1,
-                "cid2": conversion_id_2,
             })
 
-            if not result:
-                logger.warning("No response from byId API")
-                # Fallback: construct S3 URLs directly from conversion IDs
+            if not result or result.get("error"):
+                logger.warning(f"Projects API failed: {result}")
                 return self._build_s3_metadata(
-                    task_id, conversion_id_1, conversion_id_2
+                    "", conversion_id_1, conversion_id_2
                 )
 
-            source = result.get("source", "")
-            data = result.get("data", {})
-            data2 = result.get("data2")
+            data = result.get("data", [])
+            if not isinstance(data, list):
+                logger.warning(f"Unexpected projects response: {list(result.keys())}")
+                return self._build_s3_metadata(
+                    "", conversion_id_1, conversion_id_2
+                )
 
-            logger.info(f"byId response via {source}")
-            metadata = self.extract_metadata(data)
-
-            # If we got a second response (per-conversion queries), merge audio_url_2
-            if data2:
-                meta2 = self.extract_metadata(data2)
-                if meta2.get("audio_url_1") and not metadata.get("audio_url_2"):
-                    metadata["audio_url_2"] = meta2["audio_url_1"]
-                if meta2.get("conversion_id_1") and not metadata.get("conversion_id_2"):
-                    metadata["conversion_id_2"] = meta2["conversion_id_1"]
-
-            # Ensure we have S3 fallback URLs
+            # Find projects matching our conversion IDs
             S3_BASE = "https://lalals.s3.amazonaws.com/conversions/standard"
-            cid1 = metadata.get("conversion_id_1") or conversion_id_1
-            cid2 = metadata.get("conversion_id_2") or conversion_id_2
-            if not metadata.get("audio_url_1") and cid1:
-                metadata["audio_url_1"] = f"{S3_BASE}/{cid1}/{cid1}.mp3"
-            if not metadata.get("audio_url_2") and cid2:
-                metadata["audio_url_2"] = f"{S3_BASE}/{cid2}/{cid2}.mp3"
+            metadata = {}
+            proj_v1 = None
+            proj_v2 = None
 
-            logger.info(f"Fresh URLs: {[k for k in metadata if 'url' in k]}")
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                pid = item.get("id", "")
+                if pid == conversion_id_1:
+                    proj_v1 = item
+                elif pid == conversion_id_2:
+                    proj_v2 = item
+
+            # Extract metadata from matched projects
+            for version, proj, cid in [
+                (1, proj_v1, conversion_id_1),
+                (2, proj_v2, conversion_id_2),
+            ]:
+                if not proj:
+                    # Build S3 URL from conversion ID as fallback
+                    if cid:
+                        metadata[f"conversion_id_{version}"] = cid
+                        metadata[f"audio_url_{version}"] = (
+                            f"{S3_BASE}/{cid}/{cid}.mp3"
+                        )
+                    continue
+
+                pid = proj.get("id", "")
+                status = proj.get("conversion_status", "")
+                track_url = proj.get("track_url", "")
+                track_name = proj.get("track_name", "")
+
+                metadata[f"conversion_id_{version}"] = pid
+                metadata["status"] = status  # last one wins (same for both)
+
+                # Use track_url if available (set by server on completion)
+                if track_url:
+                    metadata[f"audio_url_{version}"] = track_url
+                elif status == "SUCCESS" and pid:
+                    metadata[f"audio_url_{version}"] = (
+                        f"{S3_BASE}/{pid}/{pid}.mp3"
+                    )
+
+                # Extract real taskId from queue_task.output_payload
+                qt = proj.get("queue_task") or {}
+                output = qt.get("output_payload") or {}
+                real_task_id = output.get("taskId", "")
+                if real_task_id:
+                    metadata["task_id"] = real_task_id
+
+                if track_name and "track_name" not in metadata:
+                    metadata["track_name"] = track_name
+
+                logger.info(
+                    f"Project v{version}: id={pid[:20]}... "
+                    f"status={status} track_url={'yes' if track_url else 'no'}"
+                )
+
+            logger.info(
+                f"Poll result: status={metadata.get('status', '?')}, "
+                f"urls={[k for k in metadata if 'url' in k]}"
+            )
             return metadata
 
         except Exception as e:
-            logger.error(f"Failed to fetch fresh URLs: {e}")
+            logger.error(f"Failed to poll project status: {e}")
             return self._build_s3_metadata(
-                task_id, conversion_id_1, conversion_id_2
+                "", conversion_id_1, conversion_id_2
             )
+
+    def fetch_fresh_urls(self, task_id: str, auth_token: str = "",
+                         conversion_id_1: str = "", conversion_id_2: str = "",
+                         user_id: str = "") -> dict:
+        """Fetch fresh download URLs for a submitted song.
+
+        Delegates to ``poll_project_status()`` which queries the lalals
+        projects API.  Falls back to S3 URL construction from conversion
+        IDs if the API is unreachable.
+
+        Args:
+            task_id: The MusicGPT task UUID (for metadata, not used for query).
+            auth_token: Authorization header value captured during submit.
+            conversion_id_1: First conversion UUID.
+            conversion_id_2: Second conversion UUID.
+            user_id: Lalals user UUID for the projects API.
+
+        Returns:
+            dict with metadata (audio_url_1, audio_url_2, status, etc).
+        """
+        if user_id:
+            return self.poll_project_status(
+                user_id, conversion_id_1, conversion_id_2, auth_token,
+            )
+        # No user_id — fall back to S3 URL construction
+        logger.info("No user_id available, building S3 URLs from conversion IDs")
+        return self._build_s3_metadata(task_id, conversion_id_1, conversion_id_2)
 
     @staticmethod
     def _build_s3_metadata(task_id: str, cid1: str, cid2: str) -> dict:
@@ -970,17 +1019,15 @@ class LalalsDriver:
     # ------------------------------------------------------------------
 
     def submit_song(self, prompt: str, lyrics: str) -> tuple[str, dict]:
-        """Submit a song: fill form, click generate, capture task_id.
+        """Submit a song: fill form, click generate, capture IDs.
 
         Does NOT wait for generation to complete.  Returns as soon as
-        the generate button is clicked and the initial API response
-        is captured.
+        the generate button is clicked and the API responses are captured.
 
-        The MusicGPT API submit response contains:
-            task_id, conversion_id_1, conversion_id_2, eta
-
-        We also capture the Authorization token from outgoing requests
-        so we can call the byId status endpoint later.
+        Captures data from two lalals.com API responses:
+        1. ``POST do-music-ai`` → ``conversion_id_1``, ``conversion_id_2``
+        2. ``POST user/{uid}/projects`` → project details incl. real
+           ``taskId`` from ``queue_task.output_payload``
 
         Args:
             prompt: Song description prompt.
@@ -988,8 +1035,8 @@ class LalalsDriver:
 
         Returns:
             Tuple of (task_id, task_data_dict).
-            task_data_dict has keys: task_id, conversion_id_1,
-            conversion_id_2, auth_token, response (raw JSON).
+            task_data_dict keys: task_id, conversion_id_1,
+            conversion_id_2, user_id, auth_token, eta, response.
         """
         logger.info("=== Submitting song ===")
         logger.info(f"  prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
@@ -1001,128 +1048,169 @@ class LalalsDriver:
         self.fill_prompt(prompt)
         self.fill_lyrics(lyrics)
 
-        # Intercept requests (for auth token) and responses (for task data)
+        # Two-phase capture: first get conversion IDs, then project details.
         task_data = {}
-
-        def _is_api_url(url: str) -> bool:
-            """Match API URLs broadly — lalals routes through multiple domains."""
-            return (
-                "musicgpt.com" in url
-                or "devapi.lalals.com" in url
-                or "lalals.com/api" in url
-                or "lalals.com/_next/data" in url
-                or "/api/" in url
-            )
 
         def on_request(request):
             url = request.url
-            if _is_api_url(url):
-                headers = request.headers
-                auth = headers.get("authorization", "")
-                if auth and not task_data.get("auth_token"):
-                    task_data["auth_token"] = auth
-                    logger.info(f"Captured auth token: {auth[:30]}...")
+            if "devapi.lalals.com" not in url:
+                return
+            headers = request.headers
+            auth = headers.get("authorization", "")
+            if auth and not task_data.get("auth_token"):
+                task_data["auth_token"] = auth
+                logger.info(f"Captured auth token: {auth[:30]}...")
+            # Extract user_id from the request URL or body
+            if "/user/" in url and not task_data.get("user_id"):
+                # URL pattern: /user/{uuid}/projects
+                parts = url.split("/user/")
+                if len(parts) > 1:
+                    uid = parts[1].split("/")[0]
+                    if len(uid) > 10:
+                        task_data["user_id"] = uid
+                        logger.info(f"Captured user_id: {uid}")
 
         def on_response(response):
             url = response.url
-            method = response.request.method
             status = response.status
 
-            # Skip static assets
-            skip_ext = ('.js', '.css', '.png', '.jpg', '.jpeg', '.gif', '.svg',
-                        '.woff', '.woff2', '.ttf', '.ico', '.webp', '.avif')
-            if any(url.split('?')[0].endswith(ext) for ext in skip_ext):
+            if "devapi.lalals.com" not in url:
                 return
 
-            # Log all non-static responses for debugging API capture
-            if method in ("POST", "PUT", "PATCH"):
-                logger.info(f"{method} {status} {url[:150]}")
-            elif _is_api_url(url):
-                logger.info(f"{method} {status} {url[:150]}")
-
             try:
-                ct = response.headers.get("content-type", "")
-                if "json" not in ct and "text" not in ct:
-                    return
                 body = response.json()
             except Exception:
                 return
 
             if not isinstance(body, dict):
                 return
-            if task_data.get("task_id"):
-                return  # already captured
 
-            logger.info(f"JSON keys: {list(body.keys())[:15]} from {url[:100]}")
+            logger.info(f"API {status} {url[:120]} keys={list(body.keys())[:10]}")
 
-            # Search broadly for task_id in the response structure
-            def _extract_task_id(obj, depth=0):
-                """Recursively search for task_id-like keys."""
-                if depth > 3 or not isinstance(obj, dict):
-                    return None
-                for key in ("task_id", "taskId", "id", "conversionId",
-                            "conversion_id", "taskID"):
-                    val = obj.get(key)
-                    if val and isinstance(val, str) and len(val) > 10:
-                        return obj
-                # Check nested structures
-                for key in ("data", "conversion", "result", "response",
-                            "payload", "body", "item"):
-                    nested = obj.get(key)
-                    if isinstance(nested, dict):
-                        found = _extract_task_id(nested, depth + 1)
-                        if found:
-                            return found
-                    elif isinstance(nested, list) and nested:
-                        for item in nested[:3]:
-                            if isinstance(item, dict):
-                                found = _extract_task_id(item, depth + 1)
-                                if found:
-                                    return found
-                return None
+            # Phase 1: do-music-ai → conversion_id_1, conversion_id_2
+            if "do-music-ai" in url:
+                cid1 = body.get("conversion_id_1", "")
+                cid2 = body.get("conversion_id_2", "")
+                if cid1:
+                    task_data["conversion_id_1"] = str(cid1)
+                if cid2:
+                    task_data["conversion_id_2"] = str(cid2)
+                task_data["queued"] = body.get("queued", False)
+                logger.info(
+                    f"do-music-ai: cid1={cid1}, cid2={cid2}, "
+                    f"queued={body.get('queued')}"
+                )
+                return
 
-            src = _extract_task_id(body)
-            if src:
-                tid = (src.get("task_id") or src.get("taskId")
-                       or src.get("id") or src.get("conversionId")
-                       or src.get("conversion_id"))
-                if tid:
-                    task_data["task_id"] = str(tid)
+            # Phase 2: user/{uid}/projects → real taskId + project details
+            if "/projects" in url and "do-music-ai" not in url:
+                data = body.get("data")
+                if not isinstance(data, list) or not data:
+                    return
+
+                # Find the project matching our conversion_id_1 or _2
+                cid1 = task_data.get("conversion_id_1", "")
+                cid2 = task_data.get("conversion_id_2", "")
+                matched = None
+
+                for item in data[:10]:
+                    if not isinstance(item, dict):
+                        continue
+                    pid = item.get("id", "")
+                    if pid and (pid == cid1 or pid == cid2):
+                        matched = item
+                        break
+
+                if not matched:
+                    # Fallback: first ONGOING MUSIC_AI item
+                    for item in data[:5]:
+                        if (isinstance(item, dict)
+                                and item.get("conversion_status") == "ONGOING"
+                                and item.get("conversionType") == "MUSIC_AI"):
+                            matched = item
+                            break
+
+                if not matched:
+                    logger.warning("No matching project in projects response")
+                    return
+
+                pid = matched.get("id", "")
+                qt = matched.get("queue_task") or {}
+                output = qt.get("output_payload") or {}
+                real_task_id = output.get("taskId", "")
+                eta = output.get("eta")
+
+                # Store the real MusicGPT task_id
+                if real_task_id:
+                    task_data["task_id"] = str(real_task_id)
+
+                # Ensure conversion IDs are set (from matched project data)
+                if not task_data.get("conversion_id_1"):
+                    inp = qt.get("input_payload") or {}
                     task_data["conversion_id_1"] = str(
-                        src.get("conversion_id_1", src.get("conversionId1", ""))
+                        inp.get("conversion_id_1", "")
                     )
+                if not task_data.get("conversion_id_2"):
+                    inp = qt.get("input_payload") or {}
                     task_data["conversion_id_2"] = str(
-                        src.get("conversion_id_2", src.get("conversionId2", ""))
+                        inp.get("conversion_id_2", "")
                     )
-                    task_data["eta"] = src.get("eta")
-                    task_data["response"] = body
-                    logger.info(
-                        f"Captured: task_id={tid}, "
-                        f"cid1={task_data['conversion_id_1']}, "
-                        f"cid2={task_data['conversion_id_2']}, "
-                        f"eta={task_data.get('eta')}"
-                    )
+
+                task_data["eta"] = eta
+                task_data["response"] = body
+                task_data["matched_project_id"] = pid
+
+                logger.info(
+                    f"projects: task_id={real_task_id}, "
+                    f"project={pid[:20]}, "
+                    f"cid1={task_data.get('conversion_id_1', '')[:20]}, "
+                    f"cid2={task_data.get('conversion_id_2', '')[:20]}, "
+                    f"eta={eta}"
+                )
+
+            # Phase 2b: user/front/self → user_id fallback
+            if "/self" in url and body.get("id"):
+                if not task_data.get("user_id"):
+                    task_data["user_id"] = str(body["id"])
 
         self.page.on("request", on_request)
         self.page.on("response", on_response)
         self.click_generate()
 
-        # Poll for task_id capture instead of fixed wait
+        # Poll until we have conversion IDs (from do-music-ai) plus task_id
         from timeouts import TIMEOUTS
         max_wait = TIMEOUTS.get("api_capture_s", 30)
         poll_start = time.time()
         while time.time() - poll_start < max_wait:
-            if task_data.get("task_id"):
+            has_cids = (task_data.get("conversion_id_1")
+                        or task_data.get("conversion_id_2"))
+            has_tid = task_data.get("task_id")
+            if has_cids and has_tid:
                 logger.info(
-                    f"task_id captured after {time.time() - poll_start:.1f}s"
+                    f"All IDs captured after {time.time() - poll_start:.1f}s"
                 )
+                break
+            if has_cids and time.time() - poll_start > 15:
+                # We have conversion IDs but task_id might not come;
+                # use conversion_id_2 as fallback task_id (it works for S3)
+                if not has_tid:
+                    fallback = (task_data.get("conversion_id_2")
+                                or task_data.get("conversion_id_1"))
+                    task_data["task_id"] = fallback
+                    logger.info(
+                        f"task_id fallback to conversion_id: {fallback[:20]}"
+                    )
                 break
             self.page.wait_for_timeout(500)
         else:
-            self._capture_debug_screenshot("submit_no_task_id")
-            logger.warning(
-                f"task_id not captured within {max_wait}s"
-            )
+            self._capture_debug_screenshot("submit_no_ids")
+            logger.warning(f"IDs not fully captured within {max_wait}s")
+            # Use whatever conversion IDs we have
+            if not task_data.get("task_id"):
+                fallback = (task_data.get("conversion_id_2")
+                            or task_data.get("conversion_id_1", ""))
+                if fallback:
+                    task_data["task_id"] = fallback
 
         try:
             self.page.remove_listener("request", on_request)
@@ -1131,7 +1219,11 @@ class LalalsDriver:
             pass
 
         task_id = task_data.get("task_id", "")
-        logger.info(f"=== Song submitted (task_id={task_id or 'not captured'}) ===")
+        logger.info(
+            f"=== Song submitted (task_id={task_id or 'not captured'}, "
+            f"cid1={task_data.get('conversion_id_1', '')[:20]}, "
+            f"cid2={task_data.get('conversion_id_2', '')[:20]}) ==="
+        )
         return task_id, task_data
 
     # ------------------------------------------------------------------

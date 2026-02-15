@@ -13,7 +13,7 @@ import json
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QComboBox,
     QLineEdit, QPushButton, QSplitter, QCheckBox, QScrollArea, QFrame,
-    QMessageBox, QApplication, QSizePolicy,
+    QMessageBox, QApplication, QSizePolicy, QInputDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -384,6 +384,17 @@ class SongCreatorTab(BaseTab):
         )
         top_row.addWidget(self._creator_preset_combo)
 
+        save_preset_btn = QPushButton("Save Preset")
+        save_preset_btn.setStyleSheet(
+            f"QPushButton {{ background-color: #444; color: {Theme.TEXT}; border: 1px solid #666; "
+            f"border-radius: 3px; padding: 2px 8px; font-size: 11px; }} "
+            f"QPushButton:hover {{ background-color: #555; }}"
+        )
+        save_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_preset_btn.setFixedHeight(24)
+        save_preset_btn.clicked.connect(self._save_preset)
+        top_row.addWidget(save_preset_btn)
+
         self._lore_layout.addLayout(top_row)
 
         # ---- Group entries by category ----
@@ -475,6 +486,31 @@ class SongCreatorTab(BaseTab):
 
         for lore_id, cb in self._lore_checkboxes:
             cb.setChecked(lore_id in target_ids)
+
+    def _save_preset(self):
+        """Save the currently checked lore entries as a new preset."""
+        selected_ids = [
+            lore_id for lore_id, cb in self._lore_checkboxes if cb.isChecked()
+        ]
+        if not selected_ids:
+            QMessageBox.warning(
+                self, "No Lore Selected",
+                "Check at least one lore entry before saving a preset.",
+            )
+            return
+
+        name, ok = QInputDialog.getText(self, "Save Preset", "Preset name:")
+        if not ok or not name.strip():
+            return
+
+        try:
+            self.db.add_lore_preset(name.strip(), selected_ids)
+            self._refresh_creator_presets()
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Save Failed",
+                f"Could not save preset:\n\n{exc}",
+            )
 
     def _select_all_lore(self):
         """Check all lore checkboxes."""

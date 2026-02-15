@@ -15,6 +15,7 @@ The primary workflow tab for generating AI songs.
 - **Category Toggle** — Tri-state checkbox per category to select/deselect all entries in that group
 - **Select All / Deselect All** — Quick buttons to check or uncheck every lore entry
 - **Preset Dropdown** — Apply saved lore presets to quickly configure lore selections without modifying database active flags
+- **Save Preset** — Save the currently checked lore entries as a new named preset directly from the Creator tab
 - Scroll area (350px max height) accommodates the grouped layout
 
 ### Lore Preview
@@ -152,14 +153,15 @@ Browse, search, and manage all songs with automation controls.
 - **Register-once semantics** — Default selector order is only written for new groups; learned ordering persists across sessions
 
 ### Download Strategies (Priority Order)
-1. **API download** — Use captured `task_id` to fetch fresh URLs from `api.musicgpt.com/api/public/v1/byId`, download from S3
+1. **Project API polling** — Poll `devapi.lalals.com/user/{uid}/projects` for completion status, use `track_url` or construct S3 URL from conversion IDs
 2. **Home page download** — Navigate to lalals.com home, find song card by `data-project-id` or text, click three-dot menu → Download → Full Song
 3. **Direct S3 URL** — Construct S3 URL from conversion IDs: `https://lalals.s3.amazonaws.com/conversions/standard/{cid}/{cid}.mp3`
 
-### API Capture
-- Response listener intercepts `devapi.lalals.com` and `musicgpt.com` responses after clicking Generate
-- Recursive extraction finds `task_id` nested in `data[].id` from `/user/{uid}/projects` endpoint
+### API Capture (Two-Phase)
+- **Phase 1** — `POST do-music-ai` response captured for `conversion_id_1` and `conversion_id_2`
+- **Phase 2** — `POST user/{uid}/projects` response matched by conversion ID to extract real `taskId` from `queue_task.output_payload.taskId`, plus `user_id` for later polling
 - Polls every 500ms for up to 30 seconds (configurable via `timeouts.py`)
+- Captures `auth_token` and `user_id` from request headers/URLs for authenticated API calls
 - Debug screenshots saved to `~/.songfactory/screenshots/` on capture failure
 
 ### Song Statuses

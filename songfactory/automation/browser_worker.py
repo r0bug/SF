@@ -263,6 +263,7 @@ class LalalsWorker(QThread):
                     auth_token = task_data.get("auth_token", "")
                     cid1 = task_data.get("conversion_id_1", "")
                     cid2 = task_data.get("conversion_id_2", "")
+                    user_id = task_data.get("user_id", "")
 
                     # Store task_id + conversion IDs, set status to "submitted"
                     if task_id:
@@ -323,12 +324,13 @@ class LalalsWorker(QThread):
                     actual_size_2 = 0
                     metadata = {}
 
-                    # Strategy 1: Use task_id to fetch fresh URLs via API
-                    if task_id:
+                    # Strategy 1: Poll project status via lalals API
+                    if cid1 or cid2:
                         def _strategy_1():
                             nonlocal metadata
                             m = driver.fetch_fresh_urls(
-                                task_id, auth_token, cid1, cid2
+                                task_id, auth_token, cid1, cid2,
+                                user_id=user_id,
                             )
                             if m:
                                 p = driver.download_songs_v2(

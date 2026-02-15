@@ -489,6 +489,13 @@ class LoreEditorTab(BaseTab):
             self._set_editor_enabled(False)
             return
 
+        # Skip redundant editor reload when re-selecting the same entry
+        # (e.g. after save_current rebuilds the list).  This avoids an
+        # expensive setPlainText round-trip for large lore content.
+        lore_id = current.data(Qt.ItemDataRole.UserRole)
+        if lore_id == self._current_id and not self._dirty:
+            return
+
         self.on_item_selected(current)
 
     def on_item_selected(self, item: QListWidgetItem | None = None):
@@ -588,6 +595,7 @@ class LoreEditorTab(BaseTab):
         )
 
         self._current_id = new_id
+        self._dirty = True  # Force editor load for the new entry
         self.load_lore_list()
         event_bus.lore_changed.emit()
 

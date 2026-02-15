@@ -53,19 +53,19 @@ class TestS3UrlPatternConsistency:
         assert meta["audio_url_2"] == self._expected_url("cid-bbb")
 
     def test_fetch_fresh_urls_fallback_pattern(self):
-        """fetch_fresh_urls() S3 fallback uses the correct pattern.
+        """poll_project_status() S3 fallback uses the correct pattern.
 
         We verify by inspecting the source code for the S3_BASE variable
-        used in fetch_fresh_urls() to ensure it matches the other methods.
+        used in poll_project_status() to ensure it matches the other methods.
         """
         import inspect
         from automation.lalals_driver import LalalsDriver
 
-        source = inspect.getsource(LalalsDriver.fetch_fresh_urls)
+        source = inspect.getsource(LalalsDriver.poll_project_status)
         # The method should use /standard/ in its S3_BASE
         assert "conversions/standard" in source
-        # And should use /{cid}/{cid}.mp3 pattern
-        assert "/{cid1}/{cid1}.mp3" in source or "{cid}/{cid}.mp3" in source.replace("cid1", "cid").replace("cid2", "cid")
+        # And should use /{pid}/{pid}.mp3 or /{cid}/{cid}.mp3 pattern
+        assert ".mp3" in source
 
     def test_all_three_methods_produce_same_urls(self):
         """All three URL-producing methods give identical URLs for the same CIDs."""

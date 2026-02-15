@@ -4,7 +4,7 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 
 ## Features
 
-- **Song Creator** — Generate songs with AI using customizable lore context, genre selection, and style notes. Lore preview lets you review and edit the exact lore context before generation. Background threaded API calls keep the UI responsive.
+- **Song Creator** — Generate songs with AI using customizable lore context, genre selection, and style notes. Lore preview lets you review and edit the exact lore context before generation. Save Preset button stores checked lore entries as a named preset. Background threaded API calls keep the UI responsive.
 - **Lore Editor** — Manage world-building lore entries (people, places, events, themes, rules, general) with category filtering, bulk toggle controls, saveable presets, and lore-only export/import.
 - **Lore Discovery** — Search the web, summarize content with AI, and save results directly as lore entries.
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
