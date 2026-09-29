@@ -1,13 +1,13 @@
-"""Song detail syncer — fetches prompt + lyrics from lalals.com profile.
+"""Song detail syncer — fetches prompt + lyrics via the lalals backend API.
 
-Opens the profile page, clicks Load More to load all songs, and extracts
-prompt + lyrics from the API responses (queue_task.input_payload).
+Opens a browser with the persistent profile, navigates to lalals.com
+to establish an authenticated session, then pages through
+``/api/backend/user/{uid}/projects`` to fetch prompt + lyrics for songs
+that are missing them.
 
-The infinite-projects API response includes:
-    queue_task.input_payload.lyrics   — full lyrics text
+Each project item includes:
     queue_task.input_payload.prompt   — generation prompt / music style
-
-This avoids clicking into individual songs — one page load gets everything.
+Lyrics come from the project detail endpoint (``lyrics_output``).
 
 Usage:
     syncer = SongDetailSyncer(db_path, config)
@@ -17,6 +17,7 @@ Usage:
 """
 
 import logging
+import re
 import sqlite3
 from pathlib import Path
 
@@ -40,7 +41,7 @@ class SongDetailSyncer(QThread):
         """
         Args:
             db_path: Path to SQLite database.
-            config: Dict with lalals_username, use_xvfb, browser_path.
+            config: Dict with use_xvfb, browser_path.
             song_ids: Optional list of DB song IDs to sync.
                       If None, syncs ALL songs that have a task_id
                       but are missing prompt or lyrics.
@@ -56,7 +57,7 @@ class SongDetailSyncer(QThread):
         self._stop_flag = True
 
     def run(self):
-        """Main: open browser, load profile, extract details, update DB."""
+        """Main: open browser, fetch lalals projects, extract details, update DB."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
 
@@ -64,14 +65,16 @@ class SongDetailSyncer(QThread):
         if self.song_ids:
             placeholders = ",".join("?" * len(self.song_ids))
             songs_to_sync = conn.execute(
-                f"SELECT id, title, task_id, prompt, lyrics FROM songs "
+                f"SELECT id, title, task_id, conversion_id_1, conversion_id_2, "
+                f"prompt, lyrics FROM songs "
                 f"WHERE id IN ({placeholders}) AND task_id IS NOT NULL "
                 f"AND task_id != ''",
                 self.song_ids,
             ).fetchall()
         else:
             songs_to_sync = conn.execute(
-                "SELECT id, title, task_id, prompt, lyrics FROM songs "
+                "SELECT id, title, task_id, conversion_id_1, conversion_id_2, "
+                "prompt, lyrics FROM songs "
                 "WHERE task_id IS NOT NULL AND task_id != '' "
                 "AND (prompt IS NULL OR prompt = '' "
                 "     OR lyrics IS NULL OR lyrics = '')"
@@ -83,22 +86,28 @@ class SongDetailSyncer(QThread):
             self.finished.emit(0)
             return
 
-        # Build lookup: task_id -> {db_id, title, has_prompt, has_lyrics}
+        # Build lookup: any known ID -> {db_id, title, has_prompt, has_lyrics}
         need_sync = {}
         for row in songs_to_sync:
-            need_sync[row["task_id"]] = {
+            info = {
                 "db_id": row["id"],
                 "title": row["title"],
                 "has_prompt": bool(row["prompt"]),
                 "has_lyrics": bool(row["lyrics"]),
             }
+            # Index by task_id, conversion_id_1, and conversion_id_2
+            need_sync[row["task_id"]] = info
+            if row["conversion_id_1"]:
+                need_sync[row["conversion_id_1"]] = info
+            if row["conversion_id_2"]:
+                need_sync[row["conversion_id_2"]] = info
 
         self.progress.emit(
-            f"Syncing details for {len(need_sync)} song(s)..."
+            f"Syncing details for {len(songs_to_sync)} song(s)..."
         )
-        logger.info(f"SongDetailSyncer: {len(need_sync)} songs to sync")
+        logger.info(f"SongDetailSyncer: {len(songs_to_sync)} songs to sync")
 
-        # Open browser and load profile page
+        # Open browser and use the lalals backend API
         playwright_mod = None
         context = None
         xvfb = None
@@ -121,7 +130,8 @@ class SongDetailSyncer(QThread):
                     pass
 
             playwright_mod = sync_playwright().start()
-            profile_dir = str(LOG_DIR / "browser_profile")
+            from automation.browser_profiles import get_profile_path
+            profile_dir = get_profile_path("lalals")
 
             launch_args = {
                 "headless": headless,
@@ -144,155 +154,68 @@ class SongDetailSyncer(QThread):
 
             page = context.pages[0] if context.pages else context.new_page()
 
-            # Get username
-            username = self.config.get("lalals_username", "").strip()
-            if not username:
-                self.error.emit(
-                    "No lalals.com username configured. "
-                    "Set it in Settings > Lalals.com Username."
-                )
-                self.finished.emit(0)
-                return
+            from automation.lalals_api import LalalsApi, LalalsApiError, PRODUCE_URL
+            api = LalalsApi(page)
 
-            # Set up API response interception
-            # The DB task_id can match the profile's top-level `id`,
-            # or `conversion_id_1` / `conversion_id_2` inside
-            # queue_task.input_payload.
-            api_details = {}  # db_task_id -> {prompt, lyrics}
-
-            def on_response(response):
-                if "infinite-projects" not in response.url:
-                    return
-                try:
-                    body = response.json()
-                    items = body.get("data", []) if isinstance(body, dict) else []
-                    for item in items:
-                        if not isinstance(item, dict):
-                            continue
-                        # Extract prompt/lyrics from queue_task
-                        qt = item.get("queue_task") or {}
-                        ip = qt.get("input_payload") or {} if isinstance(qt, dict) else {}
-                        if not isinstance(ip, dict):
-                            continue
-                        lyrics = ip.get("lyrics", "")
-                        prompt = ip.get("prompt", "")
-                        if not (lyrics or prompt):
-                            continue
-                        details = {"lyrics": lyrics, "prompt": prompt}
-
-                        # Check ALL IDs against need_sync
-                        candidate_ids = set()
-                        pid = item.get("id", "")
-                        if pid:
-                            candidate_ids.add(pid)
-                        c1 = ip.get("conversion_id_1", "")
-                        c2 = ip.get("conversion_id_2", "")
-                        if c1:
-                            candidate_ids.add(c1)
-                        if c2:
-                            candidate_ids.add(c2)
-
-                        for cid in candidate_ids:
-                            if cid in need_sync:
-                                api_details[cid] = details
-                except Exception as e:
-                    logger.debug(f"Detail sync response parse error: {e}")
-
-            page.on("response", on_response)
-
-            # Navigate to profile page
-            url = f"https://lalals.com/user/{username}/audio"
-            self.progress.emit(f"Loading profile page...")
-            page.goto(url, wait_until="domcontentloaded")
+            self.progress.emit("Connecting to lalals.com...")
+            page.goto(PRODUCE_URL, wait_until="domcontentloaded")
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
             except Exception:
                 pass
-            page.wait_for_timeout(3000)
 
-            if "/auth/" in page.url:
-                self.error.emit("Not logged in to lalals.com")
-                self.finished.emit(0)
-                return
-
-            # Check if profile loaded
-            has_table = page.evaluate(
-                '() => !!document.querySelector("[data-name=\'ProjectTable\']")'
-            )
-            if not has_table:
-                self.error.emit("Profile page did not load properly")
-                self.finished.emit(0)
-                return
-
-            # Check if we already have all the data from initial load
-            remaining = set(need_sync.keys()) - set(api_details.keys())
-            click_num = 0
-            no_new_match_count = 0
-
-            # Click Load More until we've found all needed songs or exhausted
-            while remaining and click_num < 30 and not self._stop_flag:
-                load_more_visible = page.evaluate("""
-                    () => {
-                        const btns = document.querySelectorAll("button");
-                        for (const btn of btns) {
-                            if ((btn.textContent || "").trim() === "Load More"
-                                && btn.offsetParent !== null) return true;
-                        }
-                        return false;
-                    }
-                """)
-
-                if not load_more_visible:
-                    break
-
-                matches_before = len(api_details)
-
-                try:
-                    btn = page.locator('button:has-text("Load More")').first
-                    btn.scroll_into_view_if_needed()
-                    page.wait_for_timeout(500)
-                    btn.click()
-                except Exception:
-                    break
-
-                page.wait_for_timeout(2500)
-                click_num += 1
-                remaining = set(need_sync.keys()) - set(api_details.keys())
-
-                new_matches = len(api_details) - matches_before
-                if new_matches > 0:
-                    no_new_match_count = 0
-                else:
-                    no_new_match_count += 1
-                    # Stop early if no new matches after 3 consecutive clicks
-                    if no_new_match_count >= 3:
-                        logger.info(
-                            f"No new matches after 3 clicks, stopping "
-                            f"(found {len(api_details)}/{len(need_sync)})"
-                        )
-                        break
-
-                self.progress.emit(
-                    f"Loading songs... found details for "
-                    f"{len(api_details)}/{len(need_sync)} "
-                    f"(click {click_num})"
+            if not api.is_logged_in():
+                self.error.emit(
+                    "Not logged in to lalals.com — log in via the Library tab first."
                 )
+                self.finished.emit(0)
+                return
+
+            # Fetch all projects via the /api/backend proxy (cookie auth)
+            api_details = {}  # db_id -> {prompt, lyrics}
+            self.progress.emit("Fetching projects from API...")
+            total_fetched = 0
+            try:
+                for item in api.iter_projects(stop_flag=lambda: self._stop_flag):
+                    self._match_item(item, need_sync, api_details)
+                    total_fetched += 1
+                    if total_fetched % 50 == 0:
+                        self.progress.emit(
+                            f"Fetching projects... {total_fetched} scanned, "
+                            f"{len(api_details)} matched"
+                        )
+            except LalalsApiError as e:
+                logger.warning(f"Projects fetch failed: {e}")
+                self.error.emit(f"Could not fetch lalals history: {e}")
+
+            # The list has no plain lyrics — pull lyrics_output from detail
+            need_lyrics = {d["_pid"]: db_id for db_id, d in api_details.items()
+                           if not d.get("lyrics") and d.get("_pid")}
+            if need_lyrics and not self._stop_flag:
+                self.progress.emit(f"Fetching lyrics for {len(need_lyrics)} song(s)...")
+                details = api.get_projects_bulk(
+                    list(need_lyrics), stop_flag=lambda: self._stop_flag,
+                )
+                for pid, detail in details.items():
+                    api_details[need_lyrics[pid]]["lyrics"] = (
+                        detail.get("lyrics_output") or detail.get("lyrics_input") or ""
+                    )
+
+            logger.info(
+                f"SongDetailSyncer: scanned {total_fetched} projects, "
+                f"matched {len(api_details)}"
+            )
 
             # Update DB with extracted data
             self.progress.emit(
                 f"Updating {len(api_details)} song(s) with prompt/lyrics..."
             )
 
-            for task_id, details in api_details.items():
+            for db_id, details in api_details.items():
                 if self._stop_flag:
                     break
 
-                info = need_sync.get(task_id)
-                if not info:
-                    continue
-
-                db_id = info["db_id"]
-                title = info["title"]
+                title = details.get("title", "?")
 
                 set_parts = []
                 vals = []
@@ -300,13 +223,13 @@ class SongDetailSyncer(QThread):
                 # Only update fields that are currently empty
                 # unless this was an explicit single-song sync
                 if details.get("prompt") and (
-                    not info["has_prompt"] or self.song_ids
+                    not details["has_prompt"] or self.song_ids
                 ):
                     set_parts.append("prompt=?")
                     vals.append(details["prompt"])
 
                 if details.get("lyrics") and (
-                    not info["has_lyrics"] or self.song_ids
+                    not details["has_lyrics"] or self.song_ids
                 ):
                     set_parts.append("lyrics=?")
                     vals.append(details["lyrics"])
@@ -350,3 +273,54 @@ class SongDetailSyncer(QThread):
             f"Sync complete: updated {synced_count} song(s)"
         )
         self.finished.emit(synced_count)
+
+    def _match_item(self, item, need_sync, api_details):
+        """Check if a lalals project item matches any song needing sync.
+
+        Args:
+            item: Dict from the user/{uid}/projects response.
+            need_sync: Dict mapping known IDs to song info.
+            api_details: Output dict mapping db_id to extracted details.
+        """
+        qt = item.get("queue_task") or {}
+        ip = qt.get("input_payload") or {} if isinstance(qt, dict) else {}
+        if not isinstance(ip, dict):
+            ip = {}
+
+        lyrics = ip.get("lyrics", "")
+        prompt = ip.get("prompt", "")
+        if not (lyrics or prompt):
+            return
+
+        # Collect all candidate IDs from this item
+        candidate_ids = set()
+        pid = item.get("id", "")
+        if pid:
+            candidate_ids.add(pid)
+        c1 = ip.get("conversion_id_1", "")
+        c2 = ip.get("conversion_id_2", "")
+        if c1:
+            candidate_ids.add(c1)
+        if c2:
+            candidate_ids.add(c2)
+        # Also check top-level task_id
+        task_id = ""
+        op = qt.get("output_payload") or {} if isinstance(qt, dict) else {}
+        if isinstance(op, dict):
+            task_id = op.get("taskId", "")
+        if task_id:
+            candidate_ids.add(task_id)
+
+        for cid in candidate_ids:
+            if cid in need_sync:
+                info = need_sync[cid]
+                db_id = info["db_id"]
+                if db_id not in api_details:
+                    api_details[db_id] = {
+                        "_pid": pid,
+                        "prompt": prompt,
+                        "lyrics": lyrics,
+                        "title": info["title"],
+                        "has_prompt": info["has_prompt"],
+                        "has_lyrics": info["has_lyrics"],
+                    }

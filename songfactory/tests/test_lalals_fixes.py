@@ -21,9 +21,13 @@ import pytest
 # ---------------------------------------------------------------------------
 
 class TestS3UrlPatternConsistency:
-    """Verify all methods produce the same S3 URL pattern."""
+    """Verify all methods produce the same S3 URL pattern.
 
-    CORRECT_PATTERN = "https://lalals.s3.amazonaws.com/conversions/standard/{cid}/{cid}.mp3"
+    New generations live under conversions/web/standard (older ones under
+    conversions/standard, but those always come with a track_url).
+    """
+
+    CORRECT_PATTERN = "https://lalals.s3.amazonaws.com/conversions/web/standard/{cid}/{cid}.mp3"
 
     def _expected_url(self, cid: str) -> str:
         return self.CORRECT_PATTERN.format(cid=cid)
@@ -53,17 +57,17 @@ class TestS3UrlPatternConsistency:
         assert meta["audio_url_2"] == self._expected_url("cid-bbb")
 
     def test_fetch_fresh_urls_fallback_pattern(self):
-        """poll_project_status() S3 fallback uses the correct pattern.
+        """poll_project_status() S3 fallback uses the shared S3_BASE.
 
-        We verify by inspecting the source code for the S3_BASE variable
-        used in poll_project_status() to ensure it matches the other methods.
+        We verify by inspecting the source code: it must import the
+        centralized S3_BASE rather than hard-coding a bucket path.
         """
         import inspect
         from automation.lalals_driver import LalalsDriver
 
         source = inspect.getsource(LalalsDriver.poll_project_status)
-        # The method should use /standard/ in its S3_BASE
-        assert "conversions/standard" in source
+        assert "from automation.lalals_api import S3_BASE" in source
+        assert "conversions/standard" not in source
         # And should use /{pid}/{pid}.mp3 or /{cid}/{cid}.mp3 pattern
         assert ".mp3" in source
 
@@ -91,7 +95,7 @@ class TestS3UrlPatternConsistency:
         from automation.lalals_driver import LalalsDriver
 
         meta = LalalsDriver.extract_metadata({"task_id": "tid-999"})
-        expected = "https://lalals.s3.amazonaws.com/conversions/standard/tid-999/tid-999.mp3"
+        expected = "https://lalals.s3.amazonaws.com/conversions/web/standard/tid-999/tid-999.mp3"
         assert meta["audio_url_1"] == expected
 
 
@@ -326,7 +330,7 @@ class TestFindCardOnHome:
 
 
 class TestApiCapturePolling:
-    """Verify submit_song uses polling instead of fixed wait."""
+    """Verify submit_song uses the workflow API instead of fixed waits."""
 
     def test_submit_song_source_has_no_8000ms_wait(self):
         """submit_song should NOT contain the old 8-second hard wait."""
@@ -336,11 +340,13 @@ class TestApiCapturePolling:
         source = inspect.getsource(LalalsDriver.submit_song)
         assert "wait_for_timeout(8000)" not in source
 
-    def test_submit_song_source_uses_polling(self):
-        """submit_song should use polling with api_capture_s timeout."""
+    def test_submit_song_source_uses_workflow_api(self):
+        """submit_song should submit via the Co-Producer workflow API,
+        not by clicking the (frequently redesigned) form."""
         import inspect
         from automation.lalals_driver import LalalsDriver
 
         source = inspect.getsource(LalalsDriver.submit_song)
-        assert "api_capture_s" in source
-        assert "wait_for_timeout(500)" in source
+        assert "submit_music_ai" in source
+        assert "click_generate" not in source
+        assert "devapi" not in source

@@ -81,9 +81,9 @@ Generated and imported songs with full metadata.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| task_id | TEXT | Lalals.com task/project ID |
-| conversion_id_1 | TEXT | Conversion ID for version 1 |
-| conversion_id_2 | TEXT | Conversion ID for version 2 |
+| task_id | TEXT | Lalals.com Co-Producer workflow projectId (queue submissions) or the version's project ID (history imports) |
+| conversion_id_1 | TEXT | Lalals project ID of version 1 (also its S3 key on older songs) |
+| conversion_id_2 | TEXT | Lalals project ID of version 2 |
 | audio_url_1 | TEXT | Direct audio URL for version 1 |
 | audio_url_2 | TEXT | Direct audio URL for version 2 |
 | music_style | TEXT | Music style descriptor |
@@ -117,6 +117,7 @@ Key-value store for application settings.
 | musicgpt_api_key | MusicGPT API key |
 | submission_mode | "browser" or "api" |
 | lalals_username | Lalals.com profile username |
+| lalals_user_id | Lalals.com user UUID (cached from the session endpoint) |
 | lalals_email | Lalals.com login email |
 | lalals_password | Lalals.com login password |
 | browser_path | Path to browser executable |

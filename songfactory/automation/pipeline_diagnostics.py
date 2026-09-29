@@ -228,15 +228,18 @@ class PipelineDiagnosticWorker(QThread):
                     profile_dir, **launch_args
                 )
 
+            from automation.lalals_api import LalalsApi, PRODUCE_URL
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto("https://lalals.com/music", wait_until="domcontentloaded")
+            page.goto(PRODUCE_URL, wait_until="domcontentloaded")
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
             except Exception:
                 pass
 
             screenshot = self._capture_screenshot(page, "phase_a")
-            logged_in = "/auth/" not in page.url
+            # /produce is public — ask the session endpoint instead of the URL
+            logged_in = LalalsApi(page).is_logged_in()
+            self._logged_in = logged_in
             duration = time.time() - start
 
             if logged_in:
@@ -252,7 +255,7 @@ class PipelineDiagnosticWorker(QThread):
                     status="warn", duration=duration,
                     error_category="session_expired",
                     screenshot_path=screenshot,
-                    detail=f"Not logged in (redirected to {page.url})",
+                    detail=f"Not logged in (session check failed, URL: {page.url})",
                 ), page, context, playwright_inst
 
         except Exception as e:
@@ -268,7 +271,7 @@ class PipelineDiagnosticWorker(QThread):
         self.phase_started.emit("B", "Form Elements")
         start = time.time()
 
-        if "/auth/" in page.url:
+        if not getattr(self, "_logged_in", True):
             return DiagnosticResult(
                 phase="B", name="Form Elements", status="skip",
                 duration=time.time() - start,
@@ -279,6 +282,7 @@ class PipelineDiagnosticWorker(QThread):
 
         # Test prompt textarea selectors
         prompt_selectors = [
+            '[data-name="ProducePromptBox"] textarea',
             'textarea[title*="Describe"]',
             'textarea[maxlength="500"]',
             'textarea[placeholder*="escribe"]',
@@ -297,6 +301,7 @@ class PipelineDiagnosticWorker(QThread):
 
         # Test lyrics button selectors
         lyrics_selectors = [
+            '[data-name="ProduceLyricsButton"] button',
             '[data-name="LyricsButton"] button',
             'button[aria-label="Lyrics"]',
         ]
@@ -362,7 +367,7 @@ class PipelineDiagnosticWorker(QThread):
         self.phase_started.emit("C", "Form Fill Test")
         start = time.time()
 
-        if "/auth/" in page.url:
+        if not getattr(self, "_logged_in", True):
             return DiagnosticResult(
                 phase="C", name="Form Fill Test", status="skip",
                 duration=time.time() - start,
@@ -373,7 +378,8 @@ class PipelineDiagnosticWorker(QThread):
         try:
             # Find prompt textarea
             textarea = None
-            for sel in ['textarea[maxlength="500"]', 'textarea[placeholder*="escribe"]', 'textarea']:
+            for sel in ['[data-name="ProducePromptBox"] textarea',
+                        'textarea[maxlength="500"]', 'textarea[placeholder*="escribe"]', 'textarea']:
                 try:
                     loc = page.locator(sel).first
                     if loc.is_visible(timeout=3000):
@@ -426,7 +432,7 @@ class PipelineDiagnosticWorker(QThread):
         self.phase_started.emit("D", "API Submission")
         start = time.time()
 
-        if "/auth/" in page.url:
+        if not getattr(self, "_logged_in", True):
             return DiagnosticResult(
                 phase="D", name="API Submission", status="skip",
                 duration=time.time() - start,
@@ -504,7 +510,8 @@ class PipelineDiagnosticWorker(QThread):
                     cid_key = key.replace("audio_url", "conversion_id")
                     cid = row[cid_key]
                     if cid:
-                        url = f"https://lalals.s3.amazonaws.com/conversions/standard/{cid}/{cid}.mp3"
+                        from automation.lalals_api import S3_BASE
+                        url = f"{S3_BASE}/{cid}/{cid}.mp3"
 
                 if url:
                     urls_checked += 1

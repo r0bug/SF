@@ -85,6 +85,9 @@ class SongCreatorTab(BaseTab):
         self._worker = None
         self._genres_cache: list[dict] = []
         self._last_result: dict | None = None
+        # Row saved for the current generation, so pressing Save and then
+        # Queue (or vice versa) updates one song instead of duplicating it.
+        self._saved_song_id: int | None = None
         self._lore_checkboxes: list[tuple[int, QCheckBox]] = []
         self._category_checkboxes: dict[str, QCheckBox] = {}
         self._lore_id_to_category: dict[int, str] = {}
@@ -670,6 +673,7 @@ class SongCreatorTab(BaseTab):
     def on_generation_complete(self, result: dict):
         """Populate output fields with the generation result."""
         self._last_result = result
+        self._saved_song_id = None
 
         self.prompt_output.setPlainText(result.get("prompt", ""))
         self.lyrics_output.setPlainText(result.get("lyrics", ""))
@@ -748,16 +752,32 @@ class SongCreatorTab(BaseTab):
             )
 
         try:
-            song_id = self.db.add_song(
-                title=title,
-                genre_id=genre_id,
-                genre_label=genre_label,
-                prompt=prompt_text,
-                lyrics=lyrics_text,
-                user_input=user_input,
-                lore_snapshot=lore_snapshot,
-                status=status,
-            )
+            existing = (self.db.get_song(self._saved_song_id)
+                        if self._saved_song_id else None)
+            if existing and existing.get("status") in ("draft", "queued"):
+                # Same generation saved again: update it (e.g. draft → queued)
+                song_id = self._saved_song_id
+                # Never downgrade an already-queued song back to draft
+                if existing["status"] == "queued":
+                    status = "queued"
+                self.db.update_song(
+                    song_id, title=title, genre_id=genre_id,
+                    genre_label=genre_label, prompt=prompt_text,
+                    lyrics=lyrics_text, user_input=user_input,
+                    lore_snapshot=lore_snapshot, status=status,
+                )
+            else:
+                song_id = self.db.add_song(
+                    title=title,
+                    genre_id=genre_id,
+                    genre_label=genre_label,
+                    prompt=prompt_text,
+                    lyrics=lyrics_text,
+                    user_input=user_input,
+                    lore_snapshot=lore_snapshot,
+                    status=status,
+                )
+                self._saved_song_id = song_id
             status_label = "saved" if status == "draft" else "queued"
             QMessageBox.information(
                 self,

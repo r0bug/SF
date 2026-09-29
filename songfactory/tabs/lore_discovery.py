@@ -3,7 +3,8 @@ Lore Discovery Tab — search the web, summarize content, and save as lore.
 
 Provides a two-panel layout: search results on the left with checkboxes,
 and summarized lore entries on the right with inline editing and save
-controls.  All network/API work runs on background QThreads.
+controls.  Several results (or existing summaries) can be merged into a
+single deduplicated lore entry.  All network/API work runs on background QThreads.
 """
 
 from PyQt6.QtWidgets import (
@@ -185,6 +186,8 @@ class SummarizeWorker(QThread):
     progress = pyqtSignal(str)            # status message
     item_complete = pyqtSignal(int, dict)  # (index, summary_dict)
     item_error = pyqtSignal(int, str)      # (index, error_message)
+    merged_complete = pyqtSignal(dict)     # merged summary (merge mode)
+    merge_error = pyqtSignal(str)
     all_complete = pyqtSignal()
 
     def __init__(
@@ -192,15 +195,20 @@ class SummarizeWorker(QThread):
         api_key: str,
         items: list[tuple[int, SearchResult]],  # (index, result)
         category: str = "general",
+        merge: bool = False,
+        title_hint: str = "",
         parent=None,
     ):
         super().__init__(parent)
         self._api_key = api_key
         self._items = items
         self._category = category
+        self._merge = merge
+        self._title_hint = title_hint
 
     def run(self):
         summarizer = LoreSummarizer(api_key=self._api_key)
+        summaries = []
 
         for idx, result in self._items:
             self.progress.emit(f"Summarizing: {result.title}...")
@@ -221,11 +229,56 @@ class SummarizeWorker(QThread):
                     content=content,
                     category=self._category,
                 )
+                summaries.append(summary)
                 self.item_complete.emit(idx, summary)
             except Exception as exc:
                 self.item_error.emit(idx, str(exc))
 
+        if self._merge:
+            if len(summaries) >= 2:
+                self.progress.emit(f"Merging {len(summaries)} summaries...")
+                try:
+                    self.merged_complete.emit(summarizer.merge(
+                        summaries, category=self._category,
+                        title_hint=self._title_hint,
+                    ))
+                except Exception as exc:
+                    self.merge_error.emit(str(exc))
+            else:
+                self.merge_error.emit(
+                    "Need at least two successful summaries to merge"
+                )
+
         self.all_complete.emit()
+
+
+# ===================================================================
+# MergeWorker — merges already-made summaries into one entry
+# ===================================================================
+
+class MergeWorker(QThread):
+    """Background worker that merges existing summaries via Anthropic."""
+
+    merged = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, api_key: str, summaries: list[dict],
+                 category: str = "general", title_hint: str = "", parent=None):
+        super().__init__(parent)
+        self._api_key = api_key
+        self._summaries = summaries
+        self._category = category
+        self._title_hint = title_hint
+
+    def run(self):
+        try:
+            summarizer = LoreSummarizer(api_key=self._api_key)
+            self.merged.emit(summarizer.merge(
+                self._summaries, category=self._category,
+                title_hint=self._title_hint,
+            ))
+        except Exception as exc:
+            self.error.emit(str(exc))
 
 
 # ===================================================================
@@ -249,6 +302,14 @@ class SummaryCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
+
+        # Merge selection (+ badge for merged entries)
+        merged_count = self.summary.get("merged_count", 0)
+        self.merge_checkbox = QCheckBox(
+            f"Merged from {merged_count} sources — include in merge"
+            if merged_count else "Include in merge"
+        )
+        layout.addWidget(self.merge_checkbox)
 
         # Title
         title_label = QLabel("Title")
@@ -285,10 +346,13 @@ class SummaryCard(QFrame):
         self.content_edit.setFont(mono)
         layout.addWidget(self.content_edit)
 
-        # Source
-        source_url = self.summary.get("source_url", "")
-        if source_url:
-            src_label = QLabel(f"Source: {source_url}")
+        # Source(s)
+        source_urls = self.summary.get("source_urls") or [
+            self.summary.get("source_url", "")]
+        source_urls = [u for u in source_urls if u]
+        if source_urls:
+            prefix = "Sources: " if len(source_urls) > 1 else "Source: "
+            src_label = QLabel(prefix + "\n".join(source_urls))
             src_label.setStyleSheet(f"color: {Theme.DIMMED}; font-size: 11px;")
             src_label.setWordWrap(True)
             layout.addWidget(src_label)
@@ -357,6 +421,9 @@ class LoreDiscoveryTab(BaseTab):
     def __init__(self, db, parent=None):
         self._search_worker = None
         self._summarize_worker = None
+        self._merge_worker = None
+        self._merge_mode = False
+        self._pending_summaries: list[dict] = []
         self._result_rows: list[SearchResultRow] = []
         self._summary_cards: list[SummaryCard] = []
         self._search_results: list[SearchResult] = []
@@ -440,10 +507,20 @@ class LoreDiscoveryTab(BaseTab):
         self._summary_scroll.setWidget(self._summary_inner)
         right_layout.addWidget(self._summary_scroll, stretch=1)
 
-        # Add All to Lore button
+        # Merge + Add All buttons
+        summary_btns = QHBoxLayout()
+        self.merge_selected_btn = QPushButton("Merge Selected Summaries")
+        self.merge_selected_btn.setObjectName("secondaryBtn")
+        self.merge_selected_btn.setToolTip(
+            "Combine the checked summaries into one lore entry"
+        )
+        self.merge_selected_btn.setEnabled(False)
+        summary_btns.addWidget(self.merge_selected_btn)
+
         self.add_all_btn = QPushButton("Add All to Lore")
         self.add_all_btn.setEnabled(False)
-        right_layout.addWidget(self.add_all_btn)
+        summary_btns.addWidget(self.add_all_btn)
+        right_layout.addLayout(summary_btns)
 
         splitter.addWidget(right_widget)
 
@@ -470,6 +547,13 @@ class LoreDiscoveryTab(BaseTab):
         self.summarize_btn.setEnabled(False)
         bottom_bar.addWidget(self.summarize_btn)
 
+        self.summarize_merge_btn = QPushButton("Summarize && Merge")
+        self.summarize_merge_btn.setToolTip(
+            "Summarize every selected result, then merge them into one lore entry"
+        )
+        self.summarize_merge_btn.setEnabled(False)
+        bottom_bar.addWidget(self.summarize_merge_btn)
+
         bottom_bar.addStretch()
 
         self.status_label = QLabel("Status: Idle")
@@ -488,6 +572,10 @@ class LoreDiscoveryTab(BaseTab):
         self.select_all_btn.clicked.connect(self._select_all)
         self.deselect_all_btn.clicked.connect(self._deselect_all)
         self.summarize_btn.clicked.connect(self._on_summarize)
+        self.summarize_merge_btn.clicked.connect(
+            lambda: self._on_summarize(merge=True)
+        )
+        self.merge_selected_btn.clicked.connect(self._on_merge_selected)
         self.add_all_btn.clicked.connect(self._add_all_to_lore)
 
     # ------------------------------------------------------------------
@@ -548,6 +636,7 @@ class LoreDiscoveryTab(BaseTab):
         self.select_all_btn.setEnabled(True)
         self.deselect_all_btn.setEnabled(True)
         self.summarize_btn.setEnabled(True)
+        self.summarize_merge_btn.setEnabled(True)
 
         self.status_label.setText(f"Status: {len(results)} results found")
 
@@ -582,13 +671,20 @@ class LoreDiscoveryTab(BaseTab):
     # Summarize
     # ------------------------------------------------------------------
 
-    def _on_summarize(self):
+    def _on_summarize(self, merge: bool = False):
         selected = self._get_selected()
         if not selected:
             QMessageBox.warning(
                 self,
                 "Nothing Selected",
                 "Please select one or more search results to summarize.",
+            )
+            return
+        if merge and len(selected) < 2:
+            QMessageBox.warning(
+                self,
+                "Select More Results",
+                "Select at least two search results to merge.",
             )
             return
 
@@ -602,22 +698,26 @@ class LoreDiscoveryTab(BaseTab):
             return
 
         # Disable controls while summarizing
-        self.summarize_btn.setEnabled(False)
-        self.summarize_btn.setText("Summarizing...")
-        self.search_btn.setEnabled(False)
+        self._set_busy(True, "Summarizing...")
 
         category = self.category_combo.currentText()
+        self._merge_mode = merge
+        self._pending_summaries = []
 
         self._summarize_worker = SummarizeWorker(
             api_key=api_key,
             items=selected,
             category=category,
+            merge=merge,
+            title_hint=self.search_input.text().strip(),
             parent=self,
         )
         self.register_worker(self._summarize_worker)
         self._summarize_worker.progress.connect(self._on_summarize_progress)
         self._summarize_worker.item_complete.connect(self._on_item_complete)
         self._summarize_worker.item_error.connect(self._on_item_error)
+        self._summarize_worker.merged_complete.connect(self._on_merged)
+        self._summarize_worker.merge_error.connect(self._on_merge_error)
         self._summarize_worker.all_complete.connect(self._on_all_complete)
         self._summarize_worker.start()
 
@@ -625,17 +725,128 @@ class LoreDiscoveryTab(BaseTab):
         self.status_label.setText(f"Status: {msg}")
 
     def _on_item_complete(self, index: int, summary: dict):
-        # Remove stretch, add card, re-add stretch
-        if self._summary_layout.count() > 0:
-            self._summary_layout.takeAt(self._summary_layout.count() - 1)
+        if self._merge_mode:
+            # Held back: only the merged entry is shown (unless merge fails)
+            self._pending_summaries.append(summary)
+            return
+        self._add_summary_card(summary)
 
+    def _add_summary_card(self, summary: dict, at_top: bool = False) -> SummaryCard:
+        """Create a SummaryCard and insert it into the summaries panel."""
         card = SummaryCard(summary)
         card.add_btn.clicked.connect(lambda checked, c=card: self._add_card_to_lore(c))
-        self._summary_cards.append(card)
-        self._summary_layout.addWidget(card)
-        self._summary_layout.addStretch()
+        card.merge_checkbox.toggled.connect(self._update_merge_button)
+        if at_top:
+            self._summary_cards.insert(0, card)
+            self._summary_layout.insertWidget(0, card)
+        else:
+            # Remove stretch, add card, re-add stretch
+            if self._summary_layout.count() > 0:
+                self._summary_layout.takeAt(self._summary_layout.count() - 1)
+            self._summary_cards.append(card)
+            self._summary_layout.addWidget(card)
+            self._summary_layout.addStretch()
 
         self.add_all_btn.setEnabled(True)
+        return card
+
+    def _on_merged(self, merged: dict):
+        self._pending_summaries = []
+        self._add_summary_card(merged, at_top=True)
+        self._summary_scroll.verticalScrollBar().setValue(0)
+        self.status_label.setText(
+            f'Status: Merged {merged.get("merged_count", 0)} summaries '
+            f'into "{merged.get("title", "")}"'
+        )
+
+    def _on_merge_error(self, error_msg: str):
+        # Fall back to showing the individual summaries
+        for summary in self._pending_summaries:
+            self._add_summary_card(summary)
+        self._pending_summaries = []
+        QMessageBox.warning(
+            self, "Merge Failed",
+            f"Could not merge the summaries:\n\n{error_msg}\n\n"
+            "The individual summaries are shown instead.",
+        )
+
+    # ------------------------------------------------------------------
+    # Merge existing summaries
+    # ------------------------------------------------------------------
+
+    def _update_merge_button(self):
+        checked = sum(1 for c in self._summary_cards if c.merge_checkbox.isChecked())
+        busy = bool(self._merge_worker and self._merge_worker.isRunning())
+        self.merge_selected_btn.setEnabled(checked >= 2 and not busy)
+        self.merge_selected_btn.setText(
+            f"Merge {checked} Summaries" if checked >= 2
+            else "Merge Selected Summaries"
+        )
+
+    def _on_merge_selected(self):
+        cards = [c for c in self._summary_cards if c.merge_checkbox.isChecked()]
+        if len(cards) < 2:
+            QMessageBox.warning(
+                self, "Select More Summaries",
+                "Check \"Include in merge\" on at least two summaries.",
+            )
+            return
+
+        api_key = self.db.get_config("api_key")
+        if not api_key:
+            QMessageBox.warning(
+                self,
+                "API Key Missing",
+                "Please set your Anthropic API key in the Settings tab.",
+            )
+            return
+
+        summaries = []
+        for card in cards:
+            data = card.get_data()  # includes any edits made in the card
+            data["source_urls"] = card.summary.get("source_urls")
+            summaries.append(data)
+
+        self._set_busy(True, "Merging...")
+        self.status_label.setText(f"Status: Merging {len(cards)} summaries...")
+
+        self._merge_worker = MergeWorker(
+            api_key=api_key,
+            summaries=summaries,
+            category=cards[0].get_data()["category"],
+            title_hint=self.search_input.text().strip(),
+            parent=self,
+        )
+        self.register_worker(self._merge_worker)
+        self._merge_worker.merged.connect(self._on_merge_selected_done)
+        self._merge_worker.error.connect(self._on_merge_selected_error)
+        self._merge_worker.start()
+
+    def _on_merge_selected_done(self, merged: dict):
+        for card in self._summary_cards:
+            card.merge_checkbox.setChecked(False)
+        self._set_busy(False)
+        self._on_merged(merged)
+
+    def _on_merge_selected_error(self, error_msg: str):
+        self._set_busy(False)
+        self.status_label.setText("Status: Merge failed")
+        QMessageBox.warning(self, "Merge Failed",
+                            f"Could not merge the summaries:\n\n{error_msg}")
+
+    def _set_busy(self, busy: bool, label: str = ""):
+        """Enable/disable the action buttons while a worker runs."""
+        has_results = bool(self._result_rows)
+        self.search_btn.setEnabled(not busy)
+        self.summarize_btn.setEnabled(not busy and has_results)
+        self.summarize_merge_btn.setEnabled(not busy and has_results)
+        self.summarize_btn.setText(
+            label if busy and label == "Summarizing..." else "Summarize Selected"
+        )
+        if busy:
+            self.merge_selected_btn.setEnabled(False)
+        else:
+            self._update_merge_button()
 
     def _on_item_error(self, index: int, error_msg: str):
         # Show error inline as a label
@@ -653,10 +864,11 @@ class LoreDiscoveryTab(BaseTab):
         self._summary_layout.addStretch()
 
     def _on_all_complete(self):
-        self.summarize_btn.setEnabled(True)
-        self.summarize_btn.setText("Summarize Selected")
-        self.search_btn.setEnabled(True)
-        self.status_label.setText("Status: Summarization complete")
+        merged = self._merge_mode
+        self._merge_mode = False
+        self._set_busy(False)
+        if not merged:
+            self.status_label.setText("Status: Summarization complete")
 
     # ------------------------------------------------------------------
     # Save to lore
@@ -726,6 +938,7 @@ class LoreDiscoveryTab(BaseTab):
         self.select_all_btn.setEnabled(False)
         self.deselect_all_btn.setEnabled(False)
         self.summarize_btn.setEnabled(False)
+        self.summarize_merge_btn.setEnabled(False)
 
     def _clear_summaries(self):
         """Remove all summary cards."""
@@ -739,3 +952,4 @@ class LoreDiscoveryTab(BaseTab):
 
         self._summary_layout.addStretch()
         self.add_all_btn.setEnabled(False)
+        self._update_merge_button()

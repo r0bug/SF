@@ -51,7 +51,7 @@ class HistoryImportWorker(QThread):
                            selected_task_ids, the worker skips browser
                            discovery and imports directly from this data.
             profile_mode: If True, use profile page scraper instead of
-                         devapi discovery.
+                         the projects API.
             track_types: List of track labels to download, e.g.
                         ["Full Song", "Vocals", "Instrumental"].
                         Defaults to ["Full Song"] if None.
@@ -384,11 +384,17 @@ class HistoryImportWorker(QThread):
 
             self.progress_update.emit(f"Importing: {title}")
 
-            # Check existing record
+            # Check existing record — by task_id, conversion_id, then title
             existing = conn.execute(
                 "SELECT id, status, title FROM songs WHERE task_id=?", (task_id,)
             ).fetchone()
             if not existing:
+                existing = conn.execute(
+                    "SELECT id, status, title FROM songs "
+                    "WHERE conversion_id_1=? OR conversion_id_2=?",
+                    (task_id, task_id),
+                ).fetchone()
+            if not existing and len(title) > 8:
                 existing = conn.execute(
                     "SELECT id, status, title FROM songs WHERE LOWER(title)=LOWER(?)",
                     (title,)
@@ -463,19 +469,48 @@ class HistoryImportWorker(QThread):
         return imported_count
 
     # ------------------------------------------------------------------
-    # devapi.lalals.com helpers
+    # lalals.com backend API helpers (/api/backend proxy)
     # ------------------------------------------------------------------
 
     def _extract_user_id(self, page):
-        """Extract the user UUID from the page.
+        """Extract the user UUID for the logged-in session.
 
-        Tries: (1) captured from devapi URL interception, (2) JS state,
-        (3) fetch to devapi auth endpoint.
+        Tries: (1) backend session endpoint (authoritative), (2) captured
+        from URL interception, (3) DB config, (4) JS state /
+        localStorage/sessionStorage.
+        Stores captured user_id in DB config for future reuse.
         """
+        from automation.lalals_api import LalalsApi, LalalsApiError
+        try:
+            user = LalalsApi(page).get_session_user()
+            if user:
+                self._captured_user_id = str(user["id"])
+                self._store_user_id(self._captured_user_id)
+                logger.info(f"User ID from session: {self._captured_user_id}")
+                return self._captured_user_id
+        except LalalsApiError as e:
+            logger.warning(f"Session lookup failed: {e}")
+
         if self._captured_user_id:
+            self._store_user_id(self._captured_user_id)
             return self._captured_user_id
 
-        # Try JS state: __NEXT_DATA__, cookies, etc.
+        # Try DB config (stored from previous successful session)
+        try:
+            import sqlite3 as _sql
+            _conn = _sql.connect(self.db_path)
+            row = _conn.execute(
+                "SELECT value FROM config WHERE key='lalals_user_id'"
+            ).fetchone()
+            _conn.close()
+            if row and row[0]:
+                logger.info(f"Using stored user_id from DB config: {row[0]}")
+                self._captured_user_id = row[0]
+                return row[0]
+        except Exception:
+            pass
+
+        # Try JS state: __NEXT_DATA__, cookies, localStorage, etc.
         user_id = page.evaluate("""
         () => {
             // __NEXT_DATA__ (Next.js pages)
@@ -493,6 +528,31 @@ class HistoryImportWorker(QThread):
             try {
                 if (window.__user__ && window.__user__.id) return window.__user__.id;
             } catch(e) {}
+            // localStorage / sessionStorage
+            try {
+                for (const store of [localStorage, sessionStorage]) {
+                    for (let i = 0; i < store.length; i++) {
+                        const key = store.key(i);
+                        const val = store.getItem(key);
+                        if (val && val.match && val.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)) {
+                            if (key.toLowerCase().includes('user') || key.toLowerCase().includes('uid')) {
+                                return val;
+                            }
+                        }
+                        // Try parsing JSON values
+                        try {
+                            const parsed = JSON.parse(val);
+                            if (parsed && typeof parsed === 'object') {
+                                for (const k of ['id', 'userId', 'user_id', 'uid']) {
+                                    if (parsed[k] && typeof parsed[k] === 'string' && parsed[k].length > 30) {
+                                        return parsed[k];
+                                    }
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                }
+            } catch(e) {}
             // Cookies
             const cookies = document.cookie.split(';');
             for (const c of cookies) {
@@ -504,82 +564,62 @@ class HistoryImportWorker(QThread):
         """)
         if user_id:
             self._captured_user_id = user_id
+            self._store_user_id(user_id)
+            logger.info(f"Extracted user_id from JS state: {user_id}")
             return user_id
 
-        # Last resort: try devapi auth endpoint
-        user_id = page.evaluate("""
-        async () => {
-            try {
-                const resp = await fetch('https://devapi.lalals.com/auth/user', {credentials: 'include'});
-                if (resp.ok) {
-                    const d = await resp.json();
-                    return d.id || d.userId || d.user_id || null;
-                }
-            } catch(e) {}
-            return null;
-        }
-        """)
-        if user_id:
-            self._captured_user_id = user_id
-        return user_id
+        return None
 
-    def _fetch_projects_via_devapi(self, page, user_id, add_fn):
-        """Fetch all projects from devapi.lalals.com using browser session cookies.
+    def _store_user_id(self, user_id):
+        """Persist user_id to DB config for future sessions."""
+        try:
+            import sqlite3 as _sql
+            _conn = _sql.connect(self.db_path)
+            _conn.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES ('lalals_user_id', ?)",
+                (user_id,)
+            )
+            _conn.commit()
+            _conn.close()
+        except Exception as e:
+            logger.debug(f"Failed to store user_id: {e}")
 
-        Calls GET /user/{user_id}/infinite-projects?offset=N in a loop
-        until no more results are returned.
+    def _fetch_projects_via_api(self, page, add_fn):
+        """Fetch every project in the user's lalals history.
+
+        Uses ``POST /api/backend/user/{uid}/projects`` with the session
+        cookies of *page* (see ``LalalsApi.iter_projects``).  Each project is
+        one generated version and becomes one discovered song.
 
         Args:
             page: Playwright page with active lalals.com session.
-            user_id: UUID of the logged-in user.
             add_fn: Callable(item_dict) to register each discovered song.
         """
-        offset = 0
+        from automation.lalals_api import LalalsApi, LalalsApiError
+
+        api = LalalsApi(page)
         total_found = 0
-
-        while not self._stop_flag:
-            result = page.evaluate("""
-            async (args) => {
-                const [userId, offset] = args;
-                try {
-                    const resp = await fetch(
-                        'https://devapi.lalals.com/user/' + userId +
-                        '/infinite-projects?offset=' + offset,
-                        {credentials: 'include'}
-                    );
-                    if (!resp.ok) return {error: resp.status, data: []};
-                    const json = await resp.json();
-                    return {data: json.data || (Array.isArray(json) ? json : []), error: null};
-                } catch(e) {
-                    return {error: e.message, data: []};
-                }
-            }
-            """, [user_id, offset])
-
-            items = result.get("data", [])
-            if not items:
-                if result.get("error"):
-                    logger.warning(
-                        f"devapi fetch error at offset={offset}: {result['error']}"
-                    )
-                break
-
-            for item in items:
-                if not isinstance(item, dict):
+        skipped = 0
+        try:
+            for item in api.iter_projects(stop_flag=lambda: self._stop_flag):
+                song = self._normalize_project_item(item)
+                if not song:
+                    skipped += 1
                     continue
-                normalized = self._normalize_devapi_item(item)
-                add_fn(normalized)
+                add_fn(song)
                 total_found += 1
+                if total_found % 25 == 0:
+                    self.progress_update.emit(
+                        f"Fetching projects... {total_found} songs found so far"
+                    )
+        except LalalsApiError as e:
+            logger.warning(f"Project list fetch failed: {e}")
+            self.import_error.emit(f"Could not fetch lalals history: {e}")
 
-            # Stop when fewer items than a typical batch
-            if len(items) < 10:
-                break
-            offset += len(items)
-            self.progress_update.emit(
-                f"Fetching projects... {total_found} found so far"
-            )
-
-        logger.info(f"devapi: fetched {total_found} projects for user {user_id}")
+        logger.info(
+            f"projects API: {total_found} songs "
+            f"(skipped {skipped} non-song/failed entries)"
+        )
 
     def _scrape_project_cards(self, page):
         """Scrape data-project-id elements from the DOM.
@@ -614,65 +654,71 @@ class HistoryImportWorker(QThread):
         return results
 
     def _fetch_project_detail(self, page, project_id):
-        """Fetch detailed project data from devapi for a single project.
-
-        Returns a normalized song dict, or None on failure.
-        """
-        detail = page.evaluate("""
-        async (pid) => {
-            try {
-                const resp = await fetch(
-                    'https://devapi.lalals.com/projects/front/get-one-by-id/' + pid,
-                    {credentials: 'include'}
-                );
-                if (!resp.ok) return null;
-                return await resp.json();
-            } catch(e) {
-                return null;
-            }
-        }
-        """, project_id)
-
-        if not detail or not isinstance(detail, dict):
+        """Fetch full project detail (incl. ``lyrics_output``) or None."""
+        from automation.lalals_api import LalalsApi, LalalsApiError
+        try:
+            detail = LalalsApi(page).get_project(project_id)
+        except LalalsApiError as e:
+            logger.debug(f"Detail fetch failed for {project_id}: {e}")
             return None
-
-        return self._normalize_devapi_item(detail)
+        return detail if isinstance(detail, dict) else None
 
     @staticmethod
-    def _normalize_devapi_item(item):
-        """Normalize a devapi.lalals.com project item to our standard format.
+    def _normalize_project_item(item):
+        """Normalize one lalals projects-list entry into a song dict.
 
-        Maps devapi field names (track_name, track_url, conversion_status)
-        to the internal format used by the import logic (title, audio_url_1,
-        status, task_id, etc.).
+        Every generation creates two projects ("Version 1"/"Version 2"),
+        each with its own id — which is also its conversion id / S3 key,
+        so it matches ``task_id``/``conversion_id_*`` of earlier imports.
 
-        Also builds S3 fallback URLs when track_url is incomplete.
+        Returns:
+            Song dict, or None for failed runs and non-song entries
+            (e.g. LYRICS_GENERATION).
         """
-        pid = item.get("id", "")
-        track_url = item.get("track_url") or ""
+        from automation.lalals_api import (
+            LEGACY_S3_BASE, project_audio_url, version_number,
+        )
 
-        # Build S3 fallback URL if track_url is missing or incomplete
-        S3_BASE = "https://lalals.s3.amazonaws.com/conversions/standard"
-        if not track_url or track_url.rstrip("/") == "https://lalals.s3.amazonaws.com":
-            if pid:
-                track_url = f"{S3_BASE}/{pid}/{pid}.mp3"
+        pid = item.get("id", "")
+        conv_type = item.get("conversionType") or ""
+        status = item.get("conversion_status") or item.get("status") or ""
+        # Only finished songs — in-progress ones have no audio yet and
+        # would be imported as broken duplicates of the queued song.
+        if not pid or conv_type not in ("", "MUSIC_AI") or status != "SUCCESS":
+            return None
+
+        qt = item.get("queue_task") or {}
+        ip = qt.get("input_payload") if isinstance(qt, dict) else None
+        ip = ip if isinstance(ip, dict) else {}
+
+        base_title = (item.get("track_name") or item.get("name") or "").strip()
+        if len(base_title) > 80:
+            # lalals falls back to the whole prompt (sometimes with lyrics)
+            base_title = base_title.splitlines()[0].strip()[:60].rstrip() + "…"
+        ver = version_number(item)
+        title = f"{base_title} (V{ver})" if base_title else f"V{ver}-{pid[:8]}"
+        url = project_audio_url(item)
+        if not url and status == "SUCCESS":
+            url = f"{LEGACY_S3_BASE}/{pid}/{pid}.mp3"
 
         return {
             "id": pid,
             "task_id": pid,
-            "title": item.get("track_name") or item.get("name") or "",
-            "status": item.get("conversion_status") or item.get("status") or "",
-            "audio_url_1": track_url,
-            "track_url": track_url,
-            "music_style": (
-                item.get("music_style")
-                or item.get("musicStyle")
-                or item.get("style")
-                or ""
-            ),
-            "created_at": item.get("createdAt") or item.get("created_at") or "",
-            "prompt": item.get("prompt") or item.get("description") or "",
-            "conversionType": item.get("conversionType") or "",
+            "title": title,
+            "status": status,
+            "audio_url_1": url,
+            "track_url": url,
+            "music_style": item.get("music_style") or "",
+            "created_at": item.get("date_added") or item.get("created_at") or "",
+            "prompt": ip.get("prompt") or item.get("prompt") or "",
+            # list entries carry no plain lyrics; filled from detail later
+            "lyrics": item.get("lyrics_output") or ip.get("lyrics") or "",
+            "lyrics_timestamped": item.get("lyrics_timestamped") or "",
+            "conversion_id_1": pid,
+            "conversion_id_2": "",
+            "conversionType": conv_type,
+            "cover_image": item.get("cover_image") or "",
+            "_project_id": pid,
         }
 
     # ------------------------------------------------------------------
@@ -708,7 +754,7 @@ class HistoryImportWorker(QThread):
         seen_ids = set()
         discovered = []
 
-        def _add_item(item):
+        def _add_item(item, emit=True):
             """Deduplicate and track a discovered song item."""
             tid = (
                 item.get("task_id")
@@ -719,7 +765,8 @@ class HistoryImportWorker(QThread):
                 return
             seen_ids.add(tid)
             discovered.append(item)
-            self.song_found.emit(item)
+            if emit:
+                self.song_found.emit(item)
 
         playwright_mod = None
         context = None
@@ -745,7 +792,8 @@ class HistoryImportWorker(QThread):
 
             playwright_mod = sync_playwright().start()
 
-            profile_dir = str(LOG_DIR / "browser_profile")
+            from automation.browser_profiles import get_profile_path
+            profile_dir = get_profile_path("lalals")
             launch_args = {
                 'headless': headless,
                 'accept_downloads': True,
@@ -790,43 +838,17 @@ class HistoryImportWorker(QThread):
                     discovered, self.selected_task_ids, conn, dm, page
                 )
             else:
-                # ---- Legacy mode: devapi + DOM scraping ----
+                # ---- API mode: /api/backend projects list ----
+                from automation.lalals_api import LalalsApi, PRODUCE_URL
 
-                # Set up API response interception
-                def on_response(response):
-                    if self._stop_flag:
-                        return
-                    url = response.url
-                    if "devapi.lalals.com/user/" in url and not self._captured_user_id:
-                        m = re.search(
-                            r'/user/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}'
-                            r'-[0-9a-f]{4}-[0-9a-f]{12})/', url
-                        )
-                        if m:
-                            self._captured_user_id = m.group(1)
-                            logger.info(f"Captured user_id from devapi: {self._captured_user_id}")
-                    if not ("devapi.lalals.com" in url
-                            or "musicgpt.com" in url
-                            or "lalals.com/api" in url):
-                        return
-                    try:
-                        body = response.json()
-                        self._extract_items_from_response(body, _add_item)
-                    except Exception:
-                        pass
-
-                page.on("response", on_response)
-
-                # Navigate to lalals.com homepage
                 self.progress_update.emit("Navigating to lalals.com...")
-                page.goto("https://lalals.com", wait_until="domcontentloaded")
+                page.goto(PRODUCE_URL, wait_until="domcontentloaded")
                 try:
                     page.wait_for_load_state("networkidle", timeout=15000)
                 except Exception:
                     pass
-                page.wait_for_timeout(3000)
 
-                if "/auth/" in page.url:
+                if not LalalsApi(page).is_logged_in():
                     self.import_error.emit(
                         "Not logged in — please log in to lalals.com first "
                         "(use the 'Login to Lalals' button in the Library tab)."
@@ -834,56 +856,65 @@ class HistoryImportWorker(QThread):
                     self.import_finished.emit(0)
                     return
 
-                # ---- Step 2: Extract user_id and fetch projects via devapi ----
-                self.progress_update.emit("Fetching project list from devapi...")
+                # ---- Step 2: Fetch the full project history ----
+                self.progress_update.emit("Fetching project list from lalals...")
                 user_id = self._extract_user_id(page)
                 if user_id:
                     logger.info(f"User ID: {user_id}")
-                    self._fetch_projects_via_devapi(page, user_id, _add_item)
-
-                # ---- Step 3: Scrape data-project-id cards from DOM ----
-                if not discovered:
-                    self.progress_update.emit("Scraping page for project cards...")
-                    cards = self._scrape_project_cards(page)
-                    logger.info(f"Scraped {len(cards)} project cards from DOM")
-                    for card in cards:
-                        _add_item(card)
-
-                # ---- Step 4: Scroll to load more and re-check ----
-                if len(discovered) < 5:
-                    self.progress_update.emit(
-                        f"Scrolling to load more ({len(discovered)} so far)..."
+                    # Emit after lyrics are filled in (step 3): cross-thread
+                    # signals may deliver a copy of the dict to the dialog
+                    self._fetch_projects_via_api(
+                        page, lambda it: _add_item(it, emit=False)
                     )
-                    self._scroll_to_load_all(page, lambda: len(discovered))
+                else:
+                    logger.warning("Could not extract user_id — cannot fetch projects")
+                    self.import_error.emit(
+                        "Could not determine your user ID. "
+                        "Try logging in again via the Library tab."
+                    )
 
-                    # Re-scrape after scrolling
-                    cards = self._scrape_project_cards(page)
-                    for card in cards:
-                        _add_item(card)
+                # ---- Step 3: Fill lyrics / missing URLs from project detail ----
+                # The list endpoint has no plain lyrics; the detail endpoint
+                # has lyrics_output (generated) / lyrics_input (typed).
+                need_detail = [
+                    song["_project_id"] for song in discovered
+                    if song.get("_project_id") and (
+                        (self.extract_lyrics and not song.get("lyrics"))
+                        or not song.get("track_url")
+                    )
+                ]
+                if need_detail:
+                    from automation.lalals_api import LalalsApi, project_audio_url
+                    self.progress_update.emit(
+                        f"Fetching lyrics/details for {len(need_detail)} song(s)..."
+                    )
+                    details = LalalsApi(page).get_projects_bulk(
+                        need_detail,
+                        progress_fn=lambda done, total: self.progress_update.emit(
+                            f"Fetching lyrics/details... {done}/{total}"
+                        ),
+                        stop_flag=lambda: self._stop_flag,
+                    )
+                    for song in discovered:
+                        detail = details.get(song.get("_project_id"))
+                        if not detail:
+                            continue
+                        if not song.get("lyrics"):
+                            song["lyrics"] = (detail.get("lyrics_output")
+                                              or detail.get("lyrics_input") or "")
+                        if not song.get("prompt"):
+                            song["prompt"] = detail.get("prompt") or ""
+                        if not song.get("track_url"):
+                            url = project_audio_url(detail)
+                            song["track_url"] = song["audio_url_1"] = url
+                        if detail.get("audio_length_seconds"):
+                            song["duration"] = detail["audio_length_seconds"]
+                    logger.info(
+                        f"Project details: {len(details)}/{len(need_detail)} fetched"
+                    )
 
-                # ---- Step 5: Fetch detail for each project to get download URLs ----
-                self.progress_update.emit(
-                    f"Fetching details for {len(discovered)} project(s)..."
-                )
-                for i, item in enumerate(list(discovered)):
-                    if self._stop_flag:
-                        break
-                    pid = item.get("id") or item.get("task_id") or ""
-                    if pid and not item.get("track_url"):
-                        detail = self._fetch_project_detail(page, pid)
-                        if detail:
-                            # Merge detail into the discovered item
-                            item.update(detail)
-                            logger.info(
-                                f"Detail {i+1}/{len(discovered)}: "
-                                f"{detail.get('track_name', '?')} "
-                                f"url={detail.get('track_url', 'none')[:60]}"
-                            )
-
-                try:
-                    page.remove_listener("response", on_response)
-                except Exception:
-                    pass
+                for song in discovered:
+                    self.song_found.emit(song)
 
                 self.progress_update.emit(
                     f"Discovery complete: {len(discovered)} song(s) found"
@@ -932,26 +963,12 @@ class HistoryImportWorker(QThread):
         2. Match by title (case-insensitive) to existing DB record
         3. Insert as new record
 
-        When a MusicGPT API key is available, fetches fresh download
-        URLs via the byId API endpoint (more reliable than discovery data).
-
         Returns the number of songs imported/linked.
         """
         from automation.lalals_driver import LalalsDriver
 
         imported_count = 0
         selected_set = set(selected_task_ids)
-
-        # Try to get API key for fresh URL fetching
-        api_key = ""
-        try:
-            row = conn.execute(
-                "SELECT value FROM config WHERE key='musicgpt_api_key'"
-            ).fetchone()
-            if row:
-                api_key = row[0] or ""
-        except Exception:
-            pass
 
         songs_to_import = [
             s for s in discovered
@@ -975,13 +992,21 @@ class HistoryImportWorker(QThread):
                 or f"Imported-{task_id[:8]}"
             )
 
-            # Check if already in DB — first by task_id, then by title
+            # Check if already in DB — by task_id, conversion_id, then title
             existing = conn.execute(
                 "SELECT id, status, title FROM songs WHERE task_id=?", (task_id,)
             ).fetchone()
 
             if not existing:
-                # Try matching by title (case-insensitive)
+                # Try by conversion_id
+                existing = conn.execute(
+                    "SELECT id, status, title FROM songs "
+                    "WHERE conversion_id_1=? OR conversion_id_2=?",
+                    (task_id, task_id),
+                ).fetchone()
+
+            if not existing and len(title) > 8:
+                # Try matching by title — skip short/generic titles
                 existing = conn.execute(
                     "SELECT id, status, title FROM songs WHERE LOWER(title)=LOWER(?)",
                     (title,)
@@ -1003,27 +1028,38 @@ class HistoryImportWorker(QThread):
                     f"task_id={task_id}, will link/update"
                 )
 
-            # Get metadata — prefer fresh API data if key available
+            # Discovery data from the lalals projects API is authoritative
+            # (the MusicGPT byId endpoint returns 404 for every task).
             metadata = {}
-            if api_key and task_id:
-                metadata = self._fetch_metadata_via_api(api_key, task_id)
 
             if not metadata.get("audio_url_1"):
                 # Fall back to discovery data
                 metadata = LalalsDriver.extract_metadata(item)
 
-            prompt = item.get("prompt") or item.get("description") or ""
-            lyrics = item.get("lyrics") or ""
+            # Extract prompt + lyrics — may be top-level (normalized)
+            # or nested in queue_task.input_payload (raw intercepted)
+            _qt = item.get("queue_task") or {}
+            _ip = _qt.get("input_payload") or {} if isinstance(_qt, dict) else {}
+            if not isinstance(_ip, dict):
+                _ip = {}
+            prompt = (
+                item.get("prompt")
+                or _ip.get("prompt")
+                or item.get("description")
+                or ""
+            )
+            lyrics = item.get("lyrics") or _ip.get("lyrics") or ""
             style = metadata.get("music_style") or ""
 
             self.progress_update.emit(f"Importing: {title}")
 
-            # Download audio files via direct URLs
+            # Download audio files via direct URLs (MP3 + WAV)
             file_path_1 = ""
             file_path_2 = ""
             for version in (1, 2):
                 url = metadata.get(f"audio_url_{version}")
                 if url:
+                    # Download MP3
                     try:
                         path = dm.save_from_url(url, title, version)
                         if version == 1:
@@ -1034,6 +1070,16 @@ class HistoryImportWorker(QThread):
                         logger.warning(
                             f"URL download failed for {title} v{version}: {e}"
                         )
+                    # Also try the WAV beside the MP3 (same S3 key)
+                    if url.endswith(".mp3"):
+                        wav_url = url[:-4] + ".wav"
+                        try:
+                            dm.save_from_url(wav_url, title, version)
+                            logger.info(f"Downloaded WAV for {title} v{version}")
+                        except Exception as e:
+                            logger.debug(
+                                f"WAV download failed for {title} v{version}: {e}"
+                            )
 
             # If no files downloaded and we have a browser page, try DOM
             if not file_path_1 and page:
@@ -1182,9 +1228,6 @@ class HistoryImportWorker(QThread):
         2. Match by title (case-insensitive) to existing DB record
         3. Insert as new record
 
-        When a MusicGPT API key is available, fetches fresh download
-        URLs via the byId API endpoint.
-
         Args:
             songs_data: List of song dicts from the discovery phase.
             selected_task_ids: List of task_ids the user selected.
@@ -1199,28 +1242,17 @@ class HistoryImportWorker(QThread):
         imported_count = 0
         selected_set = set(selected_task_ids)
 
-        # Try to get API key for fresh URL fetching
-        api_key = ""
-        try:
-            row = conn.execute(
-                "SELECT value FROM config WHERE key='musicgpt_api_key'"
-            ).fetchone()
-            if row:
-                api_key = row[0] or ""
-        except Exception:
-            pass
+        def _tid(it):
+            return it.get("task_id") or it.get("taskId") or it.get("id", "")
 
-        for item in songs_data:
+        to_import = [it for it in songs_data if _tid(it) in selected_set]
+        total = len(to_import)
+
+        for idx, item in enumerate(to_import, start=1):
             if self._stop_flag:
                 break
 
-            task_id = (
-                item.get("task_id")
-                or item.get("taskId")
-                or item.get("id", "")
-            )
-            if task_id not in selected_set:
-                continue
+            task_id = _tid(item)
 
             title = (
                 item.get("title")
@@ -1228,12 +1260,19 @@ class HistoryImportWorker(QThread):
                 or f"Imported-{task_id[:8]}"
             )
 
-            # Check if already in DB — first by task_id, then by title
+            # Check if already in DB — by task_id, conversion_id, then title
             existing = conn.execute(
                 "SELECT id, status, title FROM songs WHERE task_id=?", (task_id,)
             ).fetchone()
 
             if not existing:
+                existing = conn.execute(
+                    "SELECT id, status, title FROM songs "
+                    "WHERE conversion_id_1=? OR conversion_id_2=?",
+                    (task_id, task_id),
+                ).fetchone()
+
+            if not existing and len(title) > 8:
                 existing = conn.execute(
                     "SELECT id, status, title FROM songs WHERE LOWER(title)=LOWER(?)",
                     (title,)
@@ -1251,19 +1290,27 @@ class HistoryImportWorker(QThread):
                     logger.info(f"Skipping already-completed with files: task_id={task_id}")
                     continue
 
-            # Get metadata — prefer fresh API data if key available
+            # Discovery data from the lalals projects API is authoritative
+            # (the MusicGPT byId endpoint returns 404 for every task).
             metadata = {}
-            if api_key and task_id:
-                metadata = self._fetch_metadata_via_api(api_key, task_id)
 
             if not metadata.get("audio_url_1"):
                 metadata = LalalsDriver.extract_metadata(item)
 
-            prompt = item.get("prompt") or item.get("description") or ""
-            lyrics = item.get("lyrics") or ""
+            _qt2 = item.get("queue_task") or {}
+            _ip2 = _qt2.get("input_payload") or {} if isinstance(_qt2, dict) else {}
+            if not isinstance(_ip2, dict):
+                _ip2 = {}
+            prompt = (
+                item.get("prompt")
+                or _ip2.get("prompt")
+                or item.get("description")
+                or ""
+            )
+            lyrics = item.get("lyrics") or _ip2.get("lyrics") or ""
             style = metadata.get("music_style") or ""
 
-            self.progress_update.emit(f"Importing: {title}")
+            self.progress_update.emit(f"Importing ({idx}/{total}): {title}")
 
             # Download audio files
             file_path_1 = ""
@@ -1343,23 +1390,6 @@ class HistoryImportWorker(QThread):
         return imported_count
 
     # ------------------------------------------------------------------
-    # API-based metadata fetch
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _fetch_metadata_via_api(api_key: str, task_id: str) -> dict:
-        """Fetch fresh metadata from MusicGPT byId API using the API key.
-
-        Returns parsed metadata dict, or empty dict on failure.
-        """
-        try:
-            from automation.api_worker import fetch_by_task_id
-            return fetch_by_task_id(api_key, task_id)
-        except Exception as e:
-            logger.debug(f"API fetch failed for task_id={task_id}: {e}")
-            return {}
-
-    # ------------------------------------------------------------------
     # Response parsing
     # ------------------------------------------------------------------
 
@@ -1410,7 +1440,7 @@ def _looks_like_song(item: dict) -> bool:
             or item.get("conversions")
             or item.get("conversion_path")
             or item.get("music_style")
-            # devapi.lalals.com fields
+            # lalals projects API fields
             or item.get("track_name")
             or item.get("track_url")
             or item.get("conversion_status")

@@ -22,6 +22,7 @@ class ErrorCategory(Enum):
     API_TIMEOUT = "api_timeout"
     DOWNLOAD_FAILED = "download_failed"
     NETWORK_ERROR = "network_error"
+    SERVICE_UNAVAILABLE = "service_unavailable"
 
 
 # Map error categories to user-friendly action messages
@@ -45,6 +46,10 @@ ERROR_MESSAGES = {
     ErrorCategory.NETWORK_ERROR: (
         "Network connection lost during processing. "
         "Check your internet connection and try again."
+    ),
+    ErrorCategory.SERVICE_UNAVAILABLE: (
+        "Lalals.com Music AI is currently unavailable. "
+        "Please wait and try again later."
     ),
 }
 
@@ -75,6 +80,8 @@ class LalalsDriver:
     def __init__(self, page: Page, context: BrowserContext):
         self.page = page
         self.context = context
+        from automation.lalals_api import LalalsApi
+        self.api = LalalsApi(page)
         from automation.selector_registry import SelectorRegistry
         self._registry = SelectorRegistry()
 
@@ -154,32 +161,32 @@ class LalalsDriver:
     def is_logged_in(self) -> bool:
         """Check if the current session is authenticated.
 
-        Navigate to /music and see if we get redirected to login.
+        Asks the backend session endpoint (401 when logged out) — the
+        /produce page itself is public, so URL redirects prove nothing.
         """
         logger.info("Checking login status...")
-        self.page.goto("https://lalals.com/music", wait_until="domcontentloaded")
-        self.page.wait_for_load_state("networkidle", timeout=15000)
-        logged_in = "/auth/" not in self.page.url
+        logged_in = self.api.is_logged_in()
         logger.info(f"Logged in: {logged_in} (url={self.page.url})")
         return logged_in
 
     def open_login_page(self):
         """Navigate to the lalals.com login page for manual authentication.
 
-        Opens the sign-in page so the user can log in via Google Auth or
-        any other method. Call ``wait_for_manual_login()`` afterwards.
+        lalals.com no longer has a sign-in URL (``/auth/sign-in`` is a
+        404); login is a modal opened from the sidebar "Login" button.
+        Opens the home page so the user can click it, then call
+        ``wait_for_manual_login()``.
         """
-        logger.info("Opening lalals.com login page for manual authentication...")
-        self.page.goto(
-            "https://lalals.com/auth/sign-in", wait_until="domcontentloaded"
-        )
+        from automation.lalals_api import SITE
+        logger.info("Opening lalals.com for manual authentication...")
+        self.page.goto(SITE, wait_until="domcontentloaded")
         self.page.wait_for_load_state("networkidle", timeout=15000)
         logger.info(f"Login page opened (url={self.page.url})")
 
     def wait_for_manual_login(self, timeout_s: int = 300, stop_flag=None) -> bool:
         """Wait for the user to complete manual login.
 
-        Polls every 2 seconds, checking if the URL has left the /auth/ path.
+        Polls the backend session endpoint every 2 seconds.
 
         Args:
             timeout_s: Max seconds to wait (default 5 minutes).
@@ -202,9 +209,8 @@ class LalalsDriver:
                 )
 
             try:
-                url = self.page.url
-                if "/auth/" not in url and "lalals.com" in url:
-                    logger.info(f"Login detected (url={url})")
+                if self.api.is_logged_in():
+                    logger.info(f"Login detected (url={self.page.url})")
                     self.save_state()
                     return True
             except Exception:
@@ -238,11 +244,11 @@ class LalalsDriver:
             LalalsDriverError: If the browser is redirected to login
                 (session may have expired).
         """
-        if "/music" not in self.page.url:
-            logger.info("Navigating to /music...")
-            self.page.goto(
-                "https://lalals.com/music", wait_until="domcontentloaded"
-            )
+        # /music now redirects to /produce ("Co-Producer")
+        from automation.lalals_api import PRODUCE_URL
+        if "/produce" not in self.page.url:
+            logger.info("Navigating to /produce...")
+            self.page.goto(PRODUCE_URL, wait_until="domcontentloaded")
             self.page.wait_for_load_state("networkidle", timeout=15000)
 
         if "/auth/" in self.page.url:
@@ -250,6 +256,23 @@ class LalalsDriver:
                 "Redirected to login -- session may have expired",
                 category=ErrorCategory.SESSION_EXPIRED,
             )
+
+        # Detect service outage banner (lalals v5)
+        try:
+            unavailable = self.page.locator(
+                "text=AI music is not available"
+            ).first
+            if unavailable.is_visible(timeout=2000):
+                self._capture_debug_screenshot("music_unavailable")
+                raise LalalsDriverError(
+                    "Lalals.com Music AI is not available at this moment",
+                    category=ErrorCategory.SERVICE_UNAVAILABLE,
+                )
+        except LalalsDriverError:
+            raise
+        except Exception:
+            pass  # Banner not found — service is up
+
         logger.info(f"On music page (url={self.page.url})")
 
     # ------------------------------------------------------------------
@@ -272,6 +295,7 @@ class LalalsDriver:
 
         textarea = self._find_visible(
             [
+                '[data-name="ProducePromptBox"] textarea',
                 'textarea[title*="Describe"]',
                 'textarea[maxlength="500"]',          # prompt textarea
                 'textarea[placeholder*="escribe"]',
@@ -325,6 +349,7 @@ class LalalsDriver:
         # navigates to a different tool (AI Lyrics Generator).
         lyrics_toggle = self._find_visible(
             [
+                '[data-name="ProduceLyricsButton"] button',
                 '[data-name="LyricsButton"] button',
                 'button[aria-label="Lyrics"]',
             ],
@@ -344,6 +369,8 @@ class LalalsDriver:
         # "Write your own lyrics here (optional)" and maxlength=3000.
         lyrics_area = self._find_visible(
             [
+                # Co-Producer: lyrics box is a plaintext contenteditable div
+                '[data-name="ProducePromptBox"] [contenteditable]',
                 'textarea[placeholder*="Write your own lyrics"]',
                 'textarea[placeholder*="lyrics"]',
                 'textarea[maxlength="3000"]',
@@ -546,9 +573,15 @@ class LalalsDriver:
             data.get("task_id") or data.get("taskId") or data.get("id")
         )
 
-        # Conversion IDs — documented submit response has conversion_id_1/2
+        # Conversion IDs — v4: conversion_id_1/2, v5: conversion_ids array
         cid1 = data.get("conversion_id_1") or data.get("conversion_id")
         cid2 = data.get("conversion_id_2")
+        conv_ids = data.get("conversion_ids") or []
+        if isinstance(conv_ids, list) and len(conv_ids) >= 2:
+            cid1 = cid1 or conv_ids[0]
+            cid2 = cid2 or conv_ids[1]
+        elif isinstance(conv_ids, list) and len(conv_ids) == 1:
+            cid1 = cid1 or conv_ids[0]
         if cid1:
             metadata["conversion_id_1"] = str(cid1)
         if cid2:
@@ -576,12 +609,12 @@ class LalalsDriver:
             metadata["audio_url_2"] = url_2
 
         # Build S3 URLs from conversion IDs or task_id if we don't have direct URLs
-        S3_BASE = "https://lalals.s3.amazonaws.com/conversions/standard"
+        from automation.lalals_api import S3_BASE
         if not metadata.get("audio_url_1") and cid1:
             metadata["audio_url_1"] = f"{S3_BASE}/{cid1}/{cid1}.mp3"
         if not metadata.get("audio_url_2") and cid2:
             metadata["audio_url_2"] = f"{S3_BASE}/{cid2}/{cid2}.mp3"
-        # Fallback: use task_id as S3 path (devapi projects use id as path)
+        # Fallback: use task_id as S3 path (project ids double as S3 keys)
         if not metadata.get("audio_url_1") and metadata.get("task_id"):
             tid = metadata["task_id"]
             metadata["audio_url_1"] = f"{S3_BASE}/{tid}/{tid}.mp3"
@@ -828,7 +861,7 @@ class LalalsDriver:
     ) -> dict:
         """Poll lalals project status and return download URLs when ready.
 
-        Calls ``POST devapi.lalals.com/user/{uid}/projects`` (the same
+        Calls ``POST /api/backend/user/{uid}/projects`` (the same
         endpoint the lalals.com frontend uses) to get project status and
         download URLs.
 
@@ -836,7 +869,7 @@ class LalalsDriver:
             user_id: Lalals user UUID.
             conversion_id_1: First conversion UUID (Version 1).
             conversion_id_2: Second conversion UUID (Version 2).
-            auth_token: Authorization header value.
+            auth_token: Unused (cookie auth); kept for call compatibility.
 
         Returns:
             dict with keys: status, conversion_id_1, conversion_id_2,
@@ -848,56 +881,17 @@ class LalalsDriver:
             f"cid1={conversion_id_1[:12]}..., cid2={conversion_id_2[:12]}...)"
         )
 
-        js = """
-        async (args) => {
-            const { userId, authToken } = args;
-            const headers = {
-                'Content-Type': 'application/json',
-            };
-            if (authToken) {
-                headers['Authorization'] = authToken;
-            }
-            try {
-                const resp = await fetch(
-                    `https://devapi.lalals.com/user/${userId}/projects`,
-                    {
-                        method: 'POST',
-                        headers,
-                        body: JSON.stringify({
-                            page: 1, limit: 20,
-                            includeFailedProjects: true,
-                        }),
-                    }
-                );
-                if (!resp.ok) return { error: `HTTP ${resp.status}` };
-                return await resp.json();
-            } catch (e) {
-                return { error: e.message };
-            }
-        }
-        """
-
+        from automation.lalals_api import LalalsApiError
         try:
-            result = self.page.evaluate(js, {
-                "userId": user_id,
-                "authToken": auth_token,
-            })
-
-            if not result or result.get("error"):
-                logger.warning(f"Projects API failed: {result}")
+            try:
+                data = self.api.list_projects(limit=50)
+            except LalalsApiError as e:
+                logger.warning(f"Projects API failed: {e}")
                 return self._build_s3_metadata(
                     "", conversion_id_1, conversion_id_2
                 )
-
-            data = result.get("data", [])
-            if not isinstance(data, list):
-                logger.warning(f"Unexpected projects response: {list(result.keys())}")
-                return self._build_s3_metadata(
-                    "", conversion_id_1, conversion_id_2
-                )
-
             # Find projects matching our conversion IDs
-            S3_BASE = "https://lalals.s3.amazonaws.com/conversions/standard"
+            from automation.lalals_api import S3_BASE, project_audio_url
             metadata = {}
             proj_v1 = None
             proj_v2 = None
@@ -927,7 +921,7 @@ class LalalsDriver:
 
                 pid = proj.get("id", "")
                 status = proj.get("conversion_status", "")
-                track_url = proj.get("track_url", "")
+                track_url = project_audio_url(proj)
                 track_name = proj.get("track_name", "")
 
                 metadata[f"conversion_id_{version}"] = pid
@@ -970,12 +964,17 @@ class LalalsDriver:
 
     def fetch_fresh_urls(self, task_id: str, auth_token: str = "",
                          conversion_id_1: str = "", conversion_id_2: str = "",
-                         user_id: str = "") -> dict:
+                         user_id: str = "",
+                         project_ids: list[str] | None = None,
+                         task_data: dict | None = None) -> dict:
         """Fetch fresh download URLs for a submitted song.
 
-        Delegates to ``poll_project_status()`` which queries the lalals
-        projects API.  Falls back to S3 URL construction from conversion
-        IDs if the API is unreachable.
+        Tries multiple strategies in order:
+        1. ``poll_project_status()`` via user/{uid}/projects API (needs
+           conversion IDs and user_id).
+        2. ``fetch_urls_by_project_ids()`` via get-one-by-id API (v5 —
+           needs projectIds from do-music-ai).
+        3. S3 URL construction from conversion IDs (last resort).
 
         Args:
             task_id: The MusicGPT task UUID (for metadata, not used for query).
@@ -983,29 +982,69 @@ class LalalsDriver:
             conversion_id_1: First conversion UUID.
             conversion_id_2: Second conversion UUID.
             user_id: Lalals user UUID for the projects API.
+            project_ids: Project UUIDs of the generated versions.
+            task_data: The dict returned by ``submit_song()``.  When the
+                version IDs weren't visible at submit time they are looked
+                up now (by prompt + submit time) and written back into it.
 
         Returns:
             dict with metadata (audio_url_1, audio_url_2, status, etc).
         """
-        if user_id:
-            return self.poll_project_status(
+        if task_data and not (conversion_id_1 or conversion_id_2 or project_ids):
+            if self._resolve_version_ids(task_data, wait_s=0):
+                conversion_id_1 = task_data.get("conversion_id_1", "")
+                conversion_id_2 = task_data.get("conversion_id_2", "")
+                project_ids = task_data.get("project_ids", [])
+
+        # Strategy 1: projects API (works when we have conversion IDs)
+        if conversion_id_1 or conversion_id_2:
+            metadata = self.poll_project_status(
                 user_id, conversion_id_1, conversion_id_2, auth_token,
             )
-        # No user_id — fall back to S3 URL construction
-        logger.info("No user_id available, building S3 URLs from conversion IDs")
-        return self._build_s3_metadata(task_id, conversion_id_1, conversion_id_2)
+            if metadata.get("audio_url_1"):
+                return metadata
+
+        # Strategy 2: get-one-by-id with projectIds (v5)
+        if project_ids:
+            metadata = self.fetch_urls_by_project_ids(
+                project_ids, auth_token,
+            )
+            if metadata.get("audio_url_1"):
+                return metadata
+
+        # Strategy 2b: history imports store the project id as task_id
+        if task_id and not (conversion_id_1 or conversion_id_2 or project_ids):
+            metadata = self.fetch_urls_by_project_ids([task_id])
+            if metadata.get("audio_url_1"):
+                return metadata
+
+        # Strategy 3: S3 URL construction from conversion IDs
+        if conversion_id_1 or conversion_id_2:
+            logger.info("Falling back to S3 URL construction from conversion IDs")
+            return self._build_s3_metadata(task_id, conversion_id_1, conversion_id_2)
+
+        # Strategy 4: try project IDs as conversion IDs for S3 URLs
+        if project_ids:
+            logger.info("Falling back to S3 URL construction from project IDs")
+            pid1 = project_ids[0] if len(project_ids) >= 1 else ""
+            pid2 = project_ids[1] if len(project_ids) >= 2 else ""
+            return self._build_s3_metadata(task_id, pid1, pid2)
+
+        logger.warning("No IDs available for download URL construction")
+        return {}
 
     @staticmethod
     def _build_s3_metadata(task_id: str, cid1: str, cid2: str) -> dict:
         """Build metadata dict with direct S3 URLs from conversion IDs.
 
-        Documented URL pattern:
-            https://lalals.s3.amazonaws.com/conversions/{conversion_id}.mp3
+        Only a last resort — prefer the ``track_url`` from the projects API,
+        since older songs live under ``conversions/standard`` and newer ones
+        under ``conversions/web/standard``.
         """
+        from automation.lalals_api import S3_BASE
         metadata = {}
         if task_id:
             metadata["task_id"] = task_id
-        S3_BASE = "https://lalals.s3.amazonaws.com/conversions/standard"
         if cid1:
             metadata["conversion_id_1"] = cid1
             metadata["audio_url_1"] = f"{S3_BASE}/{cid1}/{cid1}.mp3"
@@ -1014,217 +1053,186 @@ class LalalsDriver:
             metadata["audio_url_2"] = f"{S3_BASE}/{cid2}/{cid2}.mp3"
         return metadata
 
+    def fetch_urls_by_project_ids(
+        self,
+        project_ids: list[str],
+        auth_token: str = "",
+    ) -> dict:
+        """Fetch download URLs using project UUIDs via get-one-by-id API.
+
+        In lalals.com v5, the do-music-ai response returns ``projectIds``
+        instead of ``conversion_id_1``/``conversion_id_2``.  Each project
+        can be queried individually for its ``track_url`` (the S3 download
+        link set on completion).
+
+        Args:
+            project_ids: List of project UUIDs from do-music-ai response.
+            auth_token: Authorization header value.
+
+        Returns:
+            dict with audio_url_1, audio_url_2, conversion_id_1/2, status,
+            track_name — same shape as poll_project_status().
+        """
+        if not project_ids:
+            return {}
+
+        logger.info(
+            f"Fetching URLs for {len(project_ids)} project(s) via get-one-by-id"
+        )
+
+        from automation.lalals_api import LalalsApiError, S3_BASE, project_audio_url
+        metadata = {}
+
+        for idx, pid in enumerate(project_ids[:2], start=1):
+            try:
+                try:
+                    result = self.api.get_project(pid)
+                except LalalsApiError as e:
+                    logger.warning(f"get-one-by-id failed for {pid[:20]}: {e}")
+                    continue
+
+                status = (result.get("conversion_status")
+                          or result.get("status", ""))
+                track_url = project_audio_url(result)
+                track_name = result.get("track_name", "")
+
+                metadata[f"conversion_id_{idx}"] = pid
+                metadata["status"] = status
+
+                if track_url:
+                    metadata[f"audio_url_{idx}"] = track_url
+                elif pid:
+                    # Fallback: construct S3 URL from project ID
+                    metadata[f"audio_url_{idx}"] = (
+                        f"{S3_BASE}/{pid}/{pid}.mp3"
+                    )
+
+                if track_name and "track_name" not in metadata:
+                    metadata["track_name"] = track_name
+
+                logger.info(
+                    f"Project v{idx}: id={pid[:20]}... "
+                    f"status={status} track_url={'yes' if track_url else 'no'}"
+                )
+
+            except Exception as e:
+                logger.warning(f"get-one-by-id error for {pid[:20]}: {e}")
+
+        logger.info(
+            f"project_id fetch result: "
+            f"urls={[k for k in metadata if 'url' in k]}"
+        )
+        return metadata
+
     # ------------------------------------------------------------------
     # Submit (fire-and-forget — no wait for completion)
     # ------------------------------------------------------------------
 
     def submit_song(self, prompt: str, lyrics: str) -> tuple[str, dict]:
-        """Submit a song: fill form, click generate, capture IDs.
+        """Submit a song via the Co-Producer workflow API.
 
-        Does NOT wait for generation to complete.  Returns as soon as
-        the generate button is clicked and the API responses are captured.
-
-        Captures data from two lalals.com API responses:
-        1. ``POST do-music-ai`` → ``conversion_id_1``, ``conversion_id_2``
-        2. ``POST user/{uid}/projects`` → project details incl. real
-           ``taskId`` from ``queue_task.output_payload``
+        Does NOT wait for generation to complete.  Creates a
+        ``produce_track_v1`` workflow, dispatches ``generate_music_ai`` and
+        then briefly polls the projects list to learn the two version IDs
+        (which double as conversion IDs / S3 path keys).
 
         Args:
             prompt: Song description prompt.
             lyrics: Full song lyrics.
 
         Returns:
-            Tuple of (task_id, task_data_dict).
-            task_data_dict keys: task_id, conversion_id_1,
-            conversion_id_2, user_id, auth_token, eta, response.
+            Tuple of (task_id, task_data_dict).  task_id is the workflow
+            projectId.  task_data_dict keys: task_id, workflow_project_id,
+            conversion_id_1, conversion_id_2, project_ids, user_id,
+            submitted_at, prompt.
+
+        Raises:
+            LalalsDriverError: If the session is gone or the workflow
+                can't be started.
         """
+        from datetime import datetime, timezone
+        from automation.lalals_api import LalalsApiError
+
         logger.info("=== Submitting song ===")
         logger.info(f"  prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}")
         logger.info(f"  lyrics: {len(lyrics)} chars")
 
         self.navigate_to_music()
-        self.page.wait_for_timeout(2000)
-
-        self.fill_prompt(prompt)
-        self.fill_lyrics(lyrics)
-
-        # Two-phase capture: first get conversion IDs, then project details.
-        task_data = {}
-
-        def on_request(request):
-            url = request.url
-            if "devapi.lalals.com" not in url:
-                return
-            headers = request.headers
-            auth = headers.get("authorization", "")
-            if auth and not task_data.get("auth_token"):
-                task_data["auth_token"] = auth
-                logger.info(f"Captured auth token: {auth[:30]}...")
-            # Extract user_id from the request URL or body
-            if "/user/" in url and not task_data.get("user_id"):
-                # URL pattern: /user/{uuid}/projects
-                parts = url.split("/user/")
-                if len(parts) > 1:
-                    uid = parts[1].split("/")[0]
-                    if len(uid) > 10:
-                        task_data["user_id"] = uid
-                        logger.info(f"Captured user_id: {uid}")
-
-        def on_response(response):
-            url = response.url
-            status = response.status
-
-            if "devapi.lalals.com" not in url:
-                return
-
-            try:
-                body = response.json()
-            except Exception:
-                return
-
-            if not isinstance(body, dict):
-                return
-
-            logger.info(f"API {status} {url[:120]} keys={list(body.keys())[:10]}")
-
-            # Phase 1: do-music-ai → conversion_id_1, conversion_id_2
-            if "do-music-ai" in url:
-                cid1 = body.get("conversion_id_1", "")
-                cid2 = body.get("conversion_id_2", "")
-                if cid1:
-                    task_data["conversion_id_1"] = str(cid1)
-                if cid2:
-                    task_data["conversion_id_2"] = str(cid2)
-                task_data["queued"] = body.get("queued", False)
-                logger.info(
-                    f"do-music-ai: cid1={cid1}, cid2={cid2}, "
-                    f"queued={body.get('queued')}"
-                )
-                return
-
-            # Phase 2: user/{uid}/projects → real taskId + project details
-            if "/projects" in url and "do-music-ai" not in url:
-                data = body.get("data")
-                if not isinstance(data, list) or not data:
-                    return
-
-                # Find the project matching our conversion_id_1 or _2
-                cid1 = task_data.get("conversion_id_1", "")
-                cid2 = task_data.get("conversion_id_2", "")
-                matched = None
-
-                for item in data[:10]:
-                    if not isinstance(item, dict):
-                        continue
-                    pid = item.get("id", "")
-                    if pid and (pid == cid1 or pid == cid2):
-                        matched = item
-                        break
-
-                if not matched:
-                    # Fallback: first ONGOING MUSIC_AI item
-                    for item in data[:5]:
-                        if (isinstance(item, dict)
-                                and item.get("conversion_status") == "ONGOING"
-                                and item.get("conversionType") == "MUSIC_AI"):
-                            matched = item
-                            break
-
-                if not matched:
-                    logger.warning("No matching project in projects response")
-                    return
-
-                pid = matched.get("id", "")
-                qt = matched.get("queue_task") or {}
-                output = qt.get("output_payload") or {}
-                real_task_id = output.get("taskId", "")
-                eta = output.get("eta")
-
-                # Store the real MusicGPT task_id
-                if real_task_id:
-                    task_data["task_id"] = str(real_task_id)
-
-                # Ensure conversion IDs are set (from matched project data)
-                if not task_data.get("conversion_id_1"):
-                    inp = qt.get("input_payload") or {}
-                    task_data["conversion_id_1"] = str(
-                        inp.get("conversion_id_1", "")
-                    )
-                if not task_data.get("conversion_id_2"):
-                    inp = qt.get("input_payload") or {}
-                    task_data["conversion_id_2"] = str(
-                        inp.get("conversion_id_2", "")
-                    )
-
-                task_data["eta"] = eta
-                task_data["response"] = body
-                task_data["matched_project_id"] = pid
-
-                logger.info(
-                    f"projects: task_id={real_task_id}, "
-                    f"project={pid[:20]}, "
-                    f"cid1={task_data.get('conversion_id_1', '')[:20]}, "
-                    f"cid2={task_data.get('conversion_id_2', '')[:20]}, "
-                    f"eta={eta}"
-                )
-
-            # Phase 2b: user/front/self → user_id fallback
-            if "/self" in url and body.get("id"):
-                if not task_data.get("user_id"):
-                    task_data["user_id"] = str(body["id"])
-
-        self.page.on("request", on_request)
-        self.page.on("response", on_response)
-        self.click_generate()
-
-        # Poll until we have conversion IDs (from do-music-ai) plus task_id
-        from timeouts import TIMEOUTS
-        max_wait = TIMEOUTS.get("api_capture_s", 30)
-        poll_start = time.time()
-        while time.time() - poll_start < max_wait:
-            has_cids = (task_data.get("conversion_id_1")
-                        or task_data.get("conversion_id_2"))
-            has_tid = task_data.get("task_id")
-            if has_cids and has_tid:
-                logger.info(
-                    f"All IDs captured after {time.time() - poll_start:.1f}s"
-                )
-                break
-            if has_cids and time.time() - poll_start > 15:
-                # We have conversion IDs but task_id might not come;
-                # use conversion_id_2 as fallback task_id (it works for S3)
-                if not has_tid:
-                    fallback = (task_data.get("conversion_id_2")
-                                or task_data.get("conversion_id_1"))
-                    task_data["task_id"] = fallback
-                    logger.info(
-                        f"task_id fallback to conversion_id: {fallback[:20]}"
-                    )
-                break
-            self.page.wait_for_timeout(500)
-        else:
-            self._capture_debug_screenshot("submit_no_ids")
-            logger.warning(f"IDs not fully captured within {max_wait}s")
-            # Use whatever conversion IDs we have
-            if not task_data.get("task_id"):
-                fallback = (task_data.get("conversion_id_2")
-                            or task_data.get("conversion_id_1", ""))
-                if fallback:
-                    task_data["task_id"] = fallback
 
         try:
-            self.page.remove_listener("request", on_request)
-            self.page.remove_listener("response", on_response)
-        except Exception:
-            pass
+            user_id = self.api.get_user_id()
+        except LalalsApiError as e:
+            raise LalalsDriverError(
+                f"Not logged in: {e}", category=ErrorCategory.SESSION_EXPIRED,
+            )
 
-        task_id = task_data.get("task_id", "")
+        submitted_at = datetime.now(timezone.utc)
+        try:
+            snap = self.api.submit_music_ai(prompt, lyrics)
+        except LalalsApiError as e:
+            self._capture_debug_screenshot("submit_failed")
+            category = (ErrorCategory.SESSION_EXPIRED if e.status in (401, 403)
+                        else ErrorCategory.SERVICE_UNAVAILABLE)
+            raise LalalsDriverError(f"Submission failed: {e}", category=category)
+
+        workflow_id = snap.get("projectId", "")
+        task_data = {
+            "task_id": workflow_id,
+            "workflow_project_id": workflow_id,
+            "user_id": user_id,
+            "submitted_at": submitted_at.isoformat(),
+            "prompt": prompt,
+            "state": snap.get("state", ""),
+        }
+
+        self._resolve_version_ids(task_data)
+
         logger.info(
-            f"=== Song submitted (task_id={task_id or 'not captured'}, "
+            f"=== Song submitted (workflow={workflow_id}, "
             f"cid1={task_data.get('conversion_id_1', '')[:20]}, "
             f"cid2={task_data.get('conversion_id_2', '')[:20]}) ==="
         )
-        return task_id, task_data
+        return workflow_id, task_data
+
+    def _resolve_version_ids(self, task_data: dict, wait_s: int = 30) -> bool:
+        """Fill conversion_id_1/2 + project_ids in *task_data* from history.
+
+        Each generation appears in the projects list as two entries
+        ("Version 1"/"Version 2").  They may take a few seconds to show up.
+
+        Returns:
+            True if at least one version ID was found.
+        """
+        from datetime import datetime
+        from automation.lalals_api import LalalsApiError
+
+        if task_data.get("conversion_id_1"):
+            return True
+        try:
+            since = datetime.fromisoformat(task_data["submitted_at"])
+        except (KeyError, ValueError):
+            return False
+
+        start = time.time()
+        while True:
+            try:
+                found = self.api.find_generated_projects(
+                    task_data.get("prompt", ""), since,
+                )
+            except LalalsApiError as e:
+                logger.warning(f"Version lookup failed: {e}")
+                found = []
+            if found:
+                ids = [p["id"] for p in found[:2]]
+                task_data["project_ids"] = ids
+                task_data["conversion_id_1"] = ids[0]
+                if len(ids) > 1:
+                    task_data["conversion_id_2"] = ids[1]
+                return True
+            if time.time() - start >= wait_s:
+                logger.info("Version IDs not visible yet — will resolve on refresh")
+                return False
+            self.page.wait_for_timeout(3000)
 
     # ------------------------------------------------------------------
     # Home page navigation + download

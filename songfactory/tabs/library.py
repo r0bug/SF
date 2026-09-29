@@ -384,17 +384,26 @@ class SongLibraryTab(BaseTab):
         self.recover_btn.setObjectName("recoverBtn")
         self.recover_btn.setFixedHeight(30)
         self.recover_btn.setToolTip(
-            "Re-download songs that have task IDs but missing audio files"
+            "Re-download songs that have lalals IDs but missing audio files"
         )
         queue_layout.addWidget(self.recover_btn)
 
-        # Recover Error Songs button — find error songs on home page by title
+        # Verify & Sync button — check all songs for missing MP3/WAV/lyrics
+        self.verify_sync_btn = QPushButton("Verify && Sync")
+        self.verify_sync_btn.setObjectName("verifySyncBtn")
+        self.verify_sync_btn.setFixedHeight(30)
+        self.verify_sync_btn.setToolTip(
+            "Check all songs for missing MP3, WAV, or lyrics and fill gaps"
+        )
+        queue_layout.addWidget(self.verify_sync_btn)
+
+        # Recover Error Songs button — look error songs up on lalals.com
         self.recover_error_btn = QPushButton("Recover Error Songs")
         self.recover_error_btn.setObjectName("recoverErrorBtn")
         self.recover_error_btn.setFixedHeight(30)
         self.recover_error_btn.setToolTip(
-            "Find songs in 'error' status on the lalals.com home page\n"
-            "and download them by title (headless browser)"
+            "Find songs in 'error' status in your lalals.com history\n"
+            "(by saved IDs or prompt) and download them"
         )
         queue_layout.addWidget(self.recover_error_btn)
 
@@ -447,6 +456,7 @@ class SongLibraryTab(BaseTab):
         self.sync_btn.clicked.connect(self._open_import_history)
         self.sync_details_btn.clicked.connect(self._start_detail_sync)
         self.recover_btn.clicked.connect(self._recover_all_downloads)
+        self.verify_sync_btn.clicked.connect(self._start_verify_sync)
         self.recover_error_btn.clicked.connect(self._recover_error_songs)
 
         # Detail area buttons
@@ -509,7 +519,7 @@ class SongLibraryTab(BaseTab):
             pw = sync_playwright().start()
 
             launch_args = {
-                'headless': True,  # Always headless — prevents user from closing browser
+                'headless': False,  # Visible so user can enter credentials
                 'accept_downloads': True,
                 'viewport': {'width': 1280, 'height': 900},
                 'args': ['--disable-blink-features=AutomationControlled'],
@@ -524,21 +534,23 @@ class SongLibraryTab(BaseTab):
                     profile_dir, **launch_args
                 )
 
+            from automation.lalals_api import LalalsApi, SITE
             page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            page.goto("https://lalals.com/auth/sign-in", wait_until="domcontentloaded")
+            # No sign-in URL anymore — login is a modal from the sidebar
+            page.goto(SITE, wait_until="domcontentloaded")
 
             QMessageBox.information(
                 self,
                 "Login to Lalals.com",
                 "A browser window has opened.\n\n"
-                "Log in using Google Auth (or any method), then click OK here "
-                "when you're done.\n\n"
+                "Click 'Login' (bottom-left of the lalals.com sidebar), sign in "
+                "with Google (or any method), then click OK here when you're "
+                "done.\n\n"
                 "Your session will be saved for queue processing.",
             )
 
             # Check if they actually logged in
-            url = page.url
-            if "/auth/" not in url:
+            if LalalsApi(page).is_logged_in():
                 self.queue_status_label.setText("Status: Logged in successfully")
             else:
                 self.queue_status_label.setText("Status: Login may not have completed")
@@ -831,7 +843,6 @@ class SongLibraryTab(BaseTab):
             return
 
         config = {
-            "lalals_username": self.db.get_config("lalals_username", ""),
             "use_xvfb": self.db.get_config("use_xvfb", "false").lower() == "true",
             "browser_path": self.db.get_config("browser_path", ""),
         }
@@ -869,6 +880,71 @@ class SongLibraryTab(BaseTab):
         self.sync_details_btn.setText("Sync Details")
         self.queue_status_label.setText(f"Status: Sync error — {message}")
         self._detail_syncer = None
+
+    # ------------------------------------------------------------------
+    # Verify & Sync
+    # ------------------------------------------------------------------
+
+    def _start_verify_sync(self):
+        """Scan all songs and download missing MP3/WAV/lyrics."""
+        if hasattr(self, "_verify_worker") and self._verify_worker and self._verify_worker.isRunning():
+            QMessageBox.information(
+                self, "Already Running",
+                "Verify & Sync is already in progress.",
+            )
+            return
+
+        try:
+            from automation.verify_sync_worker import VerifySyncWorker
+        except ImportError:
+            QMessageBox.warning(
+                self, "Missing Dependencies",
+                "Verify sync requires playwright.\n\n"
+                "Install: pip install playwright && playwright install chromium",
+            )
+            return
+
+        config = {
+            "download_dir": self.db.get_config(
+                "download_dir",
+                str(os.path.join(os.path.expanduser("~"), "Music", "SongFactory")),
+            ),
+        }
+
+        db_path = os.path.expanduser("~/.songfactory/songfactory.db")
+        self._verify_worker = VerifySyncWorker(db_path, config)
+        self.register_worker(self._verify_worker)
+        self._verify_worker.progress.connect(self._on_verify_progress)
+        self._verify_worker.song_updated.connect(self._on_verify_song_updated)
+        self._verify_worker.finished.connect(self._on_verify_finished)
+        self._verify_worker.error.connect(self._on_verify_error)
+
+        self.verify_sync_btn.setEnabled(False)
+        self.verify_sync_btn.setText("Verifying...")
+        self.queue_status_label.setText("Status: Verify & Sync starting...")
+        self._verify_worker.start()
+
+    def _on_verify_progress(self, message: str):
+        self.queue_status_label.setText(f"Status: {message}")
+
+    def _on_verify_song_updated(self, db_id: int, description: str):
+        self.queue_status_label.setText(f"Status: {description}")
+
+    def _on_verify_finished(self, mp3_count: int, wav_count: int, lyrics_count: int):
+        self.verify_sync_btn.setEnabled(True)
+        self.verify_sync_btn.setText("Verify && Sync")
+        self.queue_status_label.setText(
+            f"Status: Verify done — {mp3_count} MP3, "
+            f"{wav_count} WAV, {lyrics_count} lyrics updated"
+        )
+        self._verify_worker = None
+        self.load_songs()
+
+    def _on_verify_error(self, message: str):
+        self.verify_sync_btn.setEnabled(True)
+        self.verify_sync_btn.setText("Verify && Sync")
+        self.queue_status_label.setText(f"Status: Verify error — {message}")
+        self._verify_worker = None
 
     # ------------------------------------------------------------------
     # Worker signal handlers
@@ -982,9 +1058,9 @@ class SongLibraryTab(BaseTab):
             )
             menu.addAction(sync_detail_action)
         else:
-            recover_action = QAction("Recover from Home Page", self)
+            recover_action = QAction("Recover from Lalals", self)
             recover_action.setToolTip(
-                "Download this song from the lalals.com home page by title"
+                "Find this song in your lalals.com history (by prompt) and download it"
             )
             recover_action.triggered.connect(
                 lambda checked, sid=song_id, t=title: self._recover_from_home(sid, t)
@@ -1061,13 +1137,22 @@ class SongLibraryTab(BaseTab):
         menu.addAction(open_folder_action)
 
         # Play Song
-        play_action = QAction("Play Song", self)
+        play_action = QAction("Play Song (Version 1)", self)
         file_path_1 = song.get("file_path_1", "")
         play_action.setEnabled(bool(file_path_1))
         play_action.triggered.connect(
             lambda checked, fp=file_path_1: self._context_play_song(fp)
         )
         menu.addAction(play_action)
+
+        # Play Version 2 (lalals generates two takes of every song)
+        file_path_2 = song.get("file_path_2", "")
+        if file_path_2:
+            play_v2_action = QAction("Play Version 2", self)
+            play_v2_action.triggered.connect(
+                lambda checked, fp=file_path_2: self._context_play_song(fp)
+            )
+            menu.addAction(play_v2_action)
 
         # Play Vocals
         fp_vocals = song.get("file_path_vocals", "")
@@ -1168,7 +1253,7 @@ class SongLibraryTab(BaseTab):
             )
 
     def _context_redownload(self, song_id: int, task_id: str):
-        """Context menu action: re-download a song using fresh URLs from MusicGPT API."""
+        """Context menu action: re-download a song (lalals lookup, or MusicGPT API mode)."""
         if not task_id:
             QMessageBox.information(
                 self, "No Task ID",
@@ -1176,12 +1261,12 @@ class SongLibraryTab(BaseTab):
             )
             return
 
-        is_api = self._is_api_mode()
-
-        if is_api:
+        if self._is_api_mode():
             self._redownload_via_api(song_id, task_id)
         else:
-            self._redownload_via_browser(song_id, task_id)
+            song = self.db.get_song(song_id)
+            if song:
+                self._run_lalals_recovery([song])
 
     def _redownload_via_api(self, song_id: int, task_id: str):
         """Re-download a song via direct HTTP (API mode, no browser)."""
@@ -1269,108 +1354,6 @@ class SongLibraryTab(BaseTab):
                 self, "Re-download Error", f"Error during API re-download:\n\n{e}"
             )
 
-    def _redownload_via_browser(self, song_id: int, task_id: str):
-        """Re-download a song via browser automation (original method)."""
-        if not _HAS_WORKER:
-            QMessageBox.warning(
-                self,
-                "Missing Dependencies",
-                "Browser automation requires playwright.\n\n"
-                "Install it with:  pip install playwright && playwright install chromium",
-            )
-            return
-
-        self.queue_status_label.setText("Status: Fetching fresh download URLs...")
-        QApplication.processEvents()
-
-        try:
-            from playwright.sync_api import sync_playwright
-            from automation.lalals_driver import LalalsDriver
-            from automation.download_manager import DownloadManager
-            from automation.browser_profiles import get_profile_path
-
-            profile_dir = get_profile_path("lalals")
-            pw = sync_playwright().start()
-
-            launch_args = {
-                'headless': True,  # Always headless — prevents user from closing browser
-                'accept_downloads': True,
-                'viewport': {'width': 1280, 'height': 900},
-                'args': ['--disable-blink-features=AutomationControlled'],
-            }
-
-            try:
-                ctx = pw.chromium.launch_persistent_context(
-                    profile_dir, channel='chrome', **launch_args
-                )
-            except Exception:
-                ctx = pw.chromium.launch_persistent_context(
-                    profile_dir, **launch_args
-                )
-
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            driver = LalalsDriver(page, ctx)
-
-            # Navigate to lalals.com first to establish session
-            driver.navigate_to_music()
-
-            # Fetch fresh URLs
-            metadata = driver.fetch_fresh_urls(task_id)
-
-            ctx.close()
-            pw.stop()
-
-            if not metadata:
-                self.queue_status_label.setText("Status: Could not fetch fresh URLs")
-                QMessageBox.warning(
-                    self, "Re-download Failed",
-                    "Could not fetch fresh URLs from MusicGPT API.\n"
-                    "The session may have expired or the task may no longer exist.",
-                )
-                return
-
-            # Download files
-            download_dir = self.db.get_config(
-                "download_dir",
-                str(os.path.join(os.path.expanduser("~"), "Music", "SongFactory")),
-            )
-            dm = DownloadManager(download_dir)
-            song = self.db.get_song(song_id)
-            title = song.get("title", "untitled") if song else "untitled"
-
-            paths = []
-            for version in (1, 2):
-                url = metadata.get(f"audio_url_{version}")
-                if url:
-                    try:
-                        path = dm.save_from_url(url, title, version)
-                        paths.append(str(path))
-                    except Exception:
-                        pass
-
-            if paths:
-                update_kwargs = {}
-                if len(paths) >= 1:
-                    update_kwargs["file_path_1"] = paths[0]
-                if len(paths) >= 2:
-                    update_kwargs["file_path_2"] = paths[1]
-                # Update metadata too
-                for key in ("audio_url_1", "audio_url_2"):
-                    if key in metadata:
-                        update_kwargs[key] = metadata[key]
-
-                self.db.update_song(song_id, **update_kwargs)
-                self.queue_status_label.setText("Status: Re-download complete")
-                self.load_songs()
-            else:
-                self.queue_status_label.setText("Status: No downloadable URLs found")
-
-        except Exception as e:
-            self.queue_status_label.setText("Status: Re-download failed")
-            QMessageBox.warning(
-                self, "Re-download Error", f"Error during re-download:\n\n{e}"
-            )
-
     # ------------------------------------------------------------------
     # Wrong Song — delete files and re-download
     # ------------------------------------------------------------------
@@ -1451,46 +1434,134 @@ class SongLibraryTab(BaseTab):
             self._context_redownload(song_id, task_id)
         else:
             self._refresh_after_edit(song_id)
-            QMessageBox.information(
-                self,
-                "No Task ID",
-                f'Files for "{title}" have been removed.\n\n'
-                "This song has no task_id, so automatic re-download is not possible.\n"
-                'Use "Recover Error Songs" or "Recover from Home Page" '
-                "(right-click menu) to re-download.",
-            )
+            # No IDs: recovery falls back to matching the prompt on lalals
+            self._run_lalals_recovery([self.db.get_song(song_id)])
 
     # ------------------------------------------------------------------
     # Recover all downloads
     # ------------------------------------------------------------------
 
-    def _recover_all_downloads(self):
-        """Recover downloads for all songs with task_ids but missing files.
+    # ------------------------------------------------------------------
+    # Lalals recovery (shared by Recover Downloads / Error Songs / per-song)
+    # ------------------------------------------------------------------
 
-        Uses the MusicGPT API key to call byId for each song, then downloads.
+    def _run_lalals_recovery(self, songs: list[dict], button=None,
+                             show_summary: bool = True) -> int:
+        """Look songs up on lalals.com and download their audio.
+
+        Uses stored version IDs first, then matches by prompt against the
+        full lalals history.  Returns the number of songs recovered.
         """
-        api_key = self.db.get_config("musicgpt_api_key", "")
-        if not api_key:
-            QMessageBox.warning(
-                self,
-                "No API Key",
-                "Recovering downloads requires a MusicGPT API key.\n\n"
-                "Set it in Settings > Song Submission > MusicGPT API Key.",
-            )
-            return
+        if button is not None:
+            button.setEnabled(False)
+        self.queue_progress.setVisible(True)
+        self.queue_progress.setRange(0, len(songs))
+        self.queue_status_label.setText("Status: Connecting to lalals.com...")
+        QApplication.processEvents()
 
-        # Find songs with task_ids but no files
+        pw = ctx = None
+        recovered = 0
+        failed = []
+        try:
+            from playwright.sync_api import sync_playwright
+            from automation.browser_profiles import get_profile_path
+            from automation.download_manager import DownloadManager
+            from automation.lalals_api import LalalsApi, LalalsApiError
+            from automation.lalals_recovery import recover_song
+
+            dm = DownloadManager(self.db.get_config(
+                "download_dir",
+                str(os.path.join(os.path.expanduser("~"), "Music", "SongFactory")),
+            ))
+
+            pw = sync_playwright().start()
+            args = ["--disable-blink-features=AutomationControlled"]
+            try:
+                ctx = pw.chromium.launch_persistent_context(
+                    get_profile_path("lalals"), headless=True,
+                    channel="chrome", args=args,
+                )
+            except Exception:
+                ctx = pw.chromium.launch_persistent_context(
+                    get_profile_path("lalals"), headless=True, args=args,
+                )
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            api = LalalsApi(page)
+            if not api.is_logged_in():
+                raise LalalsApiError("Not logged in — use 'Login to Lalals' first")
+
+            history = None  # fetched lazily, only if a prompt match is needed
+
+            for i, song in enumerate(songs):
+                title = song.get("title") or "Untitled"
+                self.queue_status_label.setText(
+                    f"Recovering: {title} ({i + 1}/{len(songs)})"
+                )
+                self.queue_progress.setValue(i)
+                QApplication.processEvents()
+
+                update = recover_song(api, dm, song)
+                if not update and song.get("prompt"):
+                    if history is None:
+                        self.queue_status_label.setText(
+                            "Status: Searching lalals history by prompt..."
+                        )
+                        QApplication.processEvents()
+                        history = list(api.iter_projects())
+                    update = recover_song(api, dm, song, history)
+
+                if update:
+                    self.db.update_song(song["id"], **update)
+                    recovered += 1
+                else:
+                    failed.append(title)
+
+            self.queue_progress.setValue(len(songs))
+            msg = f"Recovered {recovered} of {len(songs)} song(s)"
+            self.queue_status_label.setText(f"Status: {msg}")
+            if show_summary or failed:
+                detail = ""
+                if failed:
+                    detail = (
+                        "\n\nNot found on lalals.com (still generating, "
+                        "failed there, or audio no longer available):\n- "
+                        + "\n- ".join(failed[:15])
+                        + ("\n..." if len(failed) > 15 else "")
+                    )
+                QMessageBox.information(self, "Recovery Complete", msg + detail)
+
+        except ImportError as e:
+            QMessageBox.warning(self, "Missing Module",
+                                f"Recovery needs playwright:\n\n{e}")
+        except Exception as e:
+            QMessageBox.warning(self, "Recovery Error",
+                                f"Error during recovery:\n\n{e}")
+        finally:
+            try:
+                if ctx:
+                    ctx.close()
+                if pw:
+                    pw.stop()
+            except Exception:
+                pass
+            if button is not None:
+                button.setEnabled(True)
+            self.queue_progress.setVisible(False)
+            self.load_songs()
+        return recovered
+
+    def _recover_all_downloads(self):
+        """Recover downloads for all songs with lalals IDs but missing files."""
         recoverable = [
             s for s in self.all_songs
-            if s.get("task_id")
+            if (s.get("conversion_id_1") or s.get("task_id"))
             and not s.get("file_path_1")
         ]
-
         if not recoverable:
             QMessageBox.information(
                 self,
                 "Nothing to Recover",
-                "No songs found with task IDs but missing files.\n\n"
+                "No songs found with lalals IDs but missing files.\n\n"
                 "To discover songs from your lalals.com history,\n"
                 "use the 'Sync History' button first.",
             )
@@ -1499,238 +1570,27 @@ class SongLibraryTab(BaseTab):
         reply = QMessageBox.question(
             self,
             "Recover Downloads",
-            f"Found {len(recoverable)} song(s) with task IDs but no files.\n\n"
-            "Recover downloads via MusicGPT API?",
+            f"Found {len(recoverable)} song(s) with lalals IDs but no files.\n\n"
+            "Recover downloads from lalals.com?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        self.recover_btn.setEnabled(False)
-        self.queue_progress.setVisible(True)
-        self.queue_progress.setRange(0, len(recoverable))
-
-        try:
-            from automation.api_worker import fetch_by_task_id, MusicGptApiError
-            from automation.download_manager import DownloadManager
-
-            download_dir = self.db.get_config(
-                "download_dir",
-                str(os.path.join(os.path.expanduser("~"), "Music", "SongFactory")),
-            )
-            dm = DownloadManager(download_dir)
-
-            success_count = 0
-            fail_count = 0
-
-            for i, song in enumerate(recoverable):
-                song_id = song["id"]
-                title = song.get("title", "Untitled")
-                task_id = song["task_id"]
-
-                self.queue_status_label.setText(
-                    f"Recovering: {title} ({i + 1}/{len(recoverable)})"
-                )
-                self.queue_progress.setValue(i)
-                QApplication.processEvents()
-
-                try:
-                    metadata = fetch_by_task_id(api_key, task_id)
-                    api_status = metadata.get("api_status", "")
-
-                    if api_status and api_status != "COMPLETED":
-                        fail_count += 1
-                        continue
-
-                    # Download files
-                    paths = []
-                    for version in (1, 2):
-                        url = metadata.get(f"audio_url_{version}")
-                        if url:
-                            try:
-                                path = dm.save_from_url(url, title, version)
-                                paths.append(str(path))
-                            except Exception:
-                                pass
-
-                    if paths:
-                        update_kwargs = {"status": "completed"}
-                        if len(paths) >= 1:
-                            update_kwargs["file_path_1"] = paths[0]
-                        if len(paths) >= 2:
-                            update_kwargs["file_path_2"] = paths[1]
-                        for key in ("audio_url_1", "audio_url_2",
-                                    "conversion_id_1", "conversion_id_2",
-                                    "duration_seconds", "music_style"):
-                            if key in metadata:
-                                update_kwargs[key] = metadata[key]
-
-                        self.db.update_song(song_id, **update_kwargs)
-                        success_count += 1
-                    else:
-                        fail_count += 1
-
-                except MusicGptApiError:
-                    fail_count += 1
-                except Exception:
-                    fail_count += 1
-
-            self.queue_progress.setValue(len(recoverable))
-
-            msg = f"Recovery complete: {success_count} downloaded"
-            if fail_count:
-                msg += f", {fail_count} failed"
-            self.queue_status_label.setText(f"Status: {msg}")
-            QMessageBox.information(self, "Recovery Complete", msg)
-
-        except ImportError:
-            QMessageBox.warning(
-                self,
-                "Missing Module",
-                "Could not import api_worker module.",
-            )
-        except Exception as e:
-            QMessageBox.warning(
-                self,
-                "Recovery Error",
-                f"Error during recovery:\n\n{e}",
-            )
-
-        self.recover_btn.setEnabled(True)
-        self.queue_progress.setVisible(False)
-        self.load_songs()
+        if reply == QMessageBox.StandardButton.Yes:
+            self._run_lalals_recovery(recoverable, self.recover_btn)
 
     # ------------------------------------------------------------------
-    # Recover error songs (no task_id) via home page
+    # Recover error songs / single song
     # ------------------------------------------------------------------
 
     def _recover_from_home(self, song_id: int, title: str):
-        """Recover a single song by downloading from lalals.com home page.
-
-        Used when no task_id was captured (browser closed, API capture failed).
-        Opens a headless browser, navigates to home page, finds the song by
-        title/prompt/lyrics text matching.
-        """
-        self.queue_status_label.setText(f"Status: Recovering '{title}' from home page...")
-        QApplication.processEvents()
-
-        # Fetch song prompt, lyrics, and task_id for better matching
-        song_row = self.db.get_song(song_id) if hasattr(self.db, 'get_song') else None
-        prompt = ""
-        lyrics = ""
-        task_id = ""
-        if song_row:
-            prompt = song_row.get("prompt", "") or ""
-            lyrics = song_row.get("lyrics", "") or ""
-            task_id = song_row.get("task_id", "") or ""
-
-        try:
-            from playwright.sync_api import sync_playwright
-            from automation.lalals_driver import LalalsDriver
-            from automation.browser_profiles import get_profile_path
-
-            download_dir = self.db.get_config(
-                "download_dir",
-                str(os.path.join(os.path.expanduser("~"), "Music", "SongFactory")),
-            )
-
-            profile_dir = get_profile_path("lalals")
-            pw = sync_playwright().start()
-
-            launch_args = {
-                'headless': True,
-                'accept_downloads': True,
-                'viewport': {'width': 1280, 'height': 900},
-                'args': ['--disable-blink-features=AutomationControlled'],
-            }
-
-            try:
-                ctx = pw.chromium.launch_persistent_context(
-                    profile_dir, channel='chrome', **launch_args
-                )
-            except Exception:
-                ctx = pw.chromium.launch_persistent_context(
-                    profile_dir, **launch_args
-                )
-
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            driver = LalalsDriver(page, ctx)
-
-            # Check login
-            if not driver.is_logged_in():
-                ctx.close()
-                pw.stop()
-                self.queue_status_label.setText("Status: Not logged in to lalals.com")
-                QMessageBox.warning(
-                    self, "Login Required",
-                    "You need to be logged in to lalals.com to recover songs.\n\n"
-                    "Use the 'Login to Lalals' button first.",
-                )
-                return
-
-            # Go to home page and download by title/prompt/lyrics
-            driver.go_to_home_page()
-            page.wait_for_timeout(3000)
-            paths = driver.download_from_home(
-                title, download_dir, prompt=prompt, lyrics=lyrics,
-                task_id=task_id,
-            )
-
-            # Capture a screenshot for debugging regardless of outcome
-            driver._capture_debug_screenshot(f"recover_{song_id}")
-
-            ctx.close()
-            pw.stop()
-
-            if paths:
-                from pathlib import Path as _Path
-                update_kwargs = {"status": "completed"}
-                if len(paths) >= 1:
-                    update_kwargs["file_path_1"] = str(paths[0])
-                    try:
-                        update_kwargs["file_size_1"] = _Path(paths[0]).stat().st_size
-                    except OSError:
-                        pass
-                if len(paths) >= 2:
-                    update_kwargs["file_path_2"] = str(paths[1])
-                    try:
-                        update_kwargs["file_size_2"] = _Path(paths[1]).stat().st_size
-                    except OSError:
-                        pass
-                self.db.update_song(song_id, **update_kwargs)
-                self.queue_status_label.setText(
-                    f"Status: Recovered '{title}' — {len(paths)} file(s)"
-                )
-                self.load_songs()
-            else:
-                self.queue_status_label.setText(
-                    f"Status: Could not find '{title}' on home page"
-                )
-                QMessageBox.warning(
-                    self, "Recovery Failed",
-                    f"Could not find '{title}' on the lalals.com home page.\n\n"
-                    "The song may not be on the first page of results, "
-                    "or the title may not match exactly.",
-                )
-
-        except Exception as e:
-            self.queue_status_label.setText("Status: Recovery failed")
-            QMessageBox.warning(
-                self, "Recovery Error", f"Error during home page recovery:\n\n{e}"
-            )
+        """Recover a single song from lalals.com (IDs, else prompt match)."""
+        song = self.db.get_song(song_id)
+        if song:
+            self._run_lalals_recovery([song])
 
     def _recover_error_songs(self):
-        """Batch recover all songs in 'error' status via home page download.
-
-        Launches a single headless browser session and tries to find each
-        error song on the lalals.com home page by title.
-        """
-        error_songs = [
-            s for s in self.all_songs
-            if s.get("status") == "error"
-        ]
-
+        """Batch recover every song in 'error' status from lalals.com."""
+        error_songs = [s for s in self.all_songs if s.get("status") == "error"]
         if not error_songs:
             QMessageBox.information(
                 self, "No Error Songs",
@@ -1742,134 +1602,13 @@ class SongLibraryTab(BaseTab):
             self,
             "Recover Error Songs",
             f"Found {len(error_songs)} song(s) in error status.\n\n"
-            "This will open a headless browser and try to download\n"
-            "each song from the lalals.com home page by title.\n\n"
-            "Continue?",
+            "Look them up on lalals.com (by saved IDs, or by prompt)\n"
+            "and download any that finished?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        self.recover_error_btn.setEnabled(False)
-        self.queue_progress.setVisible(True)
-        self.queue_progress.setRange(0, len(error_songs))
-
-        try:
-            from playwright.sync_api import sync_playwright
-            from automation.lalals_driver import LalalsDriver
-            from automation.browser_profiles import get_profile_path
-
-            download_dir = self.db.get_config(
-                "download_dir",
-                str(os.path.join(os.path.expanduser("~"), "Music", "SongFactory")),
-            )
-
-            profile_dir = get_profile_path("lalals")
-            pw = sync_playwright().start()
-
-            launch_args = {
-                'headless': True,
-                'accept_downloads': True,
-                'viewport': {'width': 1280, 'height': 900},
-                'args': ['--disable-blink-features=AutomationControlled'],
-            }
-
-            try:
-                ctx = pw.chromium.launch_persistent_context(
-                    profile_dir, channel='chrome', **launch_args
-                )
-            except Exception:
-                ctx = pw.chromium.launch_persistent_context(
-                    profile_dir, **launch_args
-                )
-
-            page = ctx.pages[0] if ctx.pages else ctx.new_page()
-            driver = LalalsDriver(page, ctx)
-
-            if not driver.is_logged_in():
-                ctx.close()
-                pw.stop()
-                self.recover_error_btn.setEnabled(True)
-                self.queue_progress.setVisible(False)
-                self.queue_status_label.setText("Status: Not logged in")
-                QMessageBox.warning(
-                    self, "Login Required",
-                    "You need to be logged in to lalals.com.\n"
-                    "Use 'Login to Lalals' first.",
-                )
-                return
-
-            success_count = 0
-            fail_count = 0
-
-            for i, song in enumerate(error_songs):
-                song_id = song["id"]
-                title = song.get("title", "Untitled")
-                prompt = song.get("prompt", "") or ""
-                lyrics = song.get("lyrics", "") or ""
-                task_id = song.get("task_id", "") or ""
-
-                self.queue_status_label.setText(
-                    f"Recovering: {title} ({i + 1}/{len(error_songs)})"
-                )
-                self.queue_progress.setValue(i)
-                QApplication.processEvents()
-
-                try:
-                    driver.go_to_home_page()
-                    page.wait_for_timeout(3000)
-                    paths = driver.download_from_home(
-                        title, download_dir, prompt=prompt, lyrics=lyrics,
-                        task_id=task_id,
-                    )
-
-                    if paths:
-                        from pathlib import Path as _Path
-                        update_kwargs = {"status": "completed"}
-                        if len(paths) >= 1:
-                            update_kwargs["file_path_1"] = str(paths[0])
-                            try:
-                                update_kwargs["file_size_1"] = _Path(paths[0]).stat().st_size
-                            except OSError:
-                                pass
-                        if len(paths) >= 2:
-                            update_kwargs["file_path_2"] = str(paths[1])
-                            try:
-                                update_kwargs["file_size_2"] = _Path(paths[1]).stat().st_size
-                            except OSError:
-                                pass
-                        self.db.update_song(song_id, **update_kwargs)
-                        success_count += 1
-                    else:
-                        fail_count += 1
-                except Exception:
-                    fail_count += 1
-
-            driver._capture_debug_screenshot("recover_error_batch")
-            ctx.close()
-            pw.stop()
-
-            self.queue_progress.setValue(len(error_songs))
-            msg = f"Recovery complete: {success_count} recovered"
-            if fail_count:
-                msg += f", {fail_count} not found on home page"
-            self.queue_status_label.setText(f"Status: {msg}")
-            QMessageBox.information(self, "Recovery Complete", msg)
-
-        except Exception as e:
-            self.queue_status_label.setText("Status: Recovery failed")
-            QMessageBox.warning(
-                self, "Recovery Error", f"Error during batch recovery:\n\n{e}"
-            )
-
-        self.recover_error_btn.setEnabled(True)
-        self.queue_progress.setVisible(False)
-        self.load_songs()
-
-    # ------------------------------------------------------------------
-    # Stylesheet
-    # ------------------------------------------------------------------
+        if reply == QMessageBox.StandardButton.Yes:
+            self._run_lalals_recovery(error_songs, self.recover_error_btn)
 
     def _apply_styles(self):
         """Apply the dark theme stylesheet to the entire tab."""

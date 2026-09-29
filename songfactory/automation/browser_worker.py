@@ -264,6 +264,7 @@ class LalalsWorker(QThread):
                     cid1 = task_data.get("conversion_id_1", "")
                     cid2 = task_data.get("conversion_id_2", "")
                     user_id = task_data.get("user_id", "")
+                    project_ids = task_data.get("project_ids", [])
 
                     # Store task_id + conversion IDs, set status to "submitted"
                     if task_id:
@@ -324,40 +325,44 @@ class LalalsWorker(QThread):
                     actual_size_2 = 0
                     metadata = {}
 
-                    # Strategy 1: Poll project status via lalals API
-                    if cid1 or cid2:
-                        def _strategy_1():
-                            nonlocal metadata
-                            m = driver.fetch_fresh_urls(
-                                task_id, auth_token, cid1, cid2,
-                                user_id=user_id,
+                    # Strategy 1: API-based download.  Version IDs that
+                    # weren't visible at submit time are resolved here
+                    # (by prompt + submit time) via task_data.
+                    def _strategy_1():
+                        nonlocal metadata
+                        m = driver.fetch_fresh_urls(
+                            task_id, auth_token, cid1, cid2,
+                            user_id=user_id,
+                            project_ids=project_ids,
+                            task_data=task_data,
+                        )
+                        if m:
+                            p = driver.download_songs_v2(
+                                m, download_dir, title
                             )
-                            if m:
-                                p = driver.download_songs_v2(
-                                    m, download_dir, title
-                                )
-                                return m, p
-                            return m, []
+                            return m, p
+                        return m, []
 
-                        try:
-                            metadata, paths = retry_call(
-                                _strategy_1,
-                                max_attempts=3,
-                                backoff_base=2,
-                            )
-                            if len(paths) >= 1:
-                                file_path_1 = str(paths[0])
-                                actual_size_1 = Path(paths[0]).stat().st_size
-                            if len(paths) >= 2:
-                                file_path_2 = str(paths[1])
-                                actual_size_2 = Path(paths[1]).stat().st_size
-                            logger.info(
-                                f"API download: {len(paths)} file(s)"
-                            )
-                        except Exception as e:
-                            logger.warning(f"API download failed: {e}")
+                    try:
+                        metadata, paths = retry_call(
+                            _strategy_1,
+                            max_attempts=3,
+                            backoff_base=2,
+                        )
+                        if len(paths) >= 1:
+                            file_path_1 = str(paths[0])
+                            actual_size_1 = Path(paths[0]).stat().st_size
+                        if len(paths) >= 2:
+                            file_path_2 = str(paths[1])
+                            actual_size_2 = Path(paths[1]).stat().st_size
+                        logger.info(
+                            f"API download: {len(paths)} file(s)"
+                        )
+                    except Exception as e:
+                        logger.warning(f"API download failed: {e}")
 
                     # Strategy 2: Home page three-dot menu download
+                    # (legacy v4 fallback — may not work on lalals v5)
                     if not file_path_1:
                         def _strategy_2():
                             driver.go_to_home_page()
@@ -393,7 +398,8 @@ class LalalsWorker(QThread):
                             # Build S3 URL from conversion_id_2
                             c2 = metadata.get("conversion_id_2") or cid2
                             if c2:
-                                url_2 = f"https://lalals.s3.amazonaws.com/conversions/standard/{c2}/{c2}.mp3"
+                                from automation.lalals_api import S3_BASE
+                                url_2 = f"{S3_BASE}/{c2}/{c2}.mp3"
                         if url_2:
                             def _strategy_3():
                                 from automation.download_manager import DownloadManager
@@ -411,6 +417,20 @@ class LalalsWorker(QThread):
                                 logger.info(f"Version 2 via URL: {p2}")
                             except Exception as e:
                                 logger.warning(f"Version 2 URL download failed: {e}")
+
+                    # Also try WAV versions alongside MP3 (same S3 key, .wav);
+                    # newer generations often have no public WAV — best effort
+                    for _ver in (1, 2):
+                        _mp3_url = metadata.get(f"audio_url_{_ver}") or ""
+                        if _mp3_url.endswith(".mp3"):
+                            wav_url = _mp3_url[:-4] + ".wav"
+                            try:
+                                from automation.download_manager import DownloadManager
+                                _dm = DownloadManager(download_dir)
+                                _dm.save_from_url(wav_url, title, _ver)
+                                logger.info(f"Downloaded WAV v{_ver} for {title}")
+                            except Exception as _e:
+                                logger.debug(f"WAV download failed v{_ver}: {_e}")
 
                     # Update DB — override API file_size with actual on-disk sizes
                     update_kwargs = {

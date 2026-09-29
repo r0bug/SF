@@ -6,9 +6,9 @@ A PyQt6 desktop application for AI-powered song creation, management, and CD mas
 
 - **Song Creator** — Generate songs with AI using customizable lore context, genre selection, and style notes. Lore preview lets you review and edit the exact lore context before generation. Save Preset button stores checked lore entries as a named preset. Background threaded API calls keep the UI responsive.
 - **Lore Editor** — Manage world-building lore entries (people, places, events, themes, rules, general) with category filtering, bulk toggle controls, saveable presets, and lore-only export/import.
-- **Lore Discovery** — Search the web, summarize content with AI, and save results directly as lore entries.
+- **Lore Discovery** — Search the web, summarize content with AI, and save results directly as lore entries. Merge several results (or existing summaries) into one deduplicated lore entry with "Summarize & Merge" / "Merge Selected Summaries".
 - **Genre Manager** — Create and manage genre definitions with prompt templates, BPM ranges, and descriptions.
-- **Song Library** — Browse, search, and filter songs by genre, status, or tag. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. User-defined song tags with colored chips, context-menu tagging, and a Manage Tags dialog. Inline rename via detail panel or context menu. Error recovery via headless home-page download. "Wrong Song" button deletes mismatched downloads and triggers re-download.
+- **Song Library** — Browse, search, and filter songs by genre, status, or tag. Includes browser automation queue for submitting songs to lalals.com and downloading results. Multi-select with batch delete/status/export. User-defined song tags with colored chips, context-menu tagging, and a Manage Tags dialog. Inline rename via detail panel or context menu. "Download All History" imports every song from your lalals.com account. Error recovery looks songs up in the lalals.com API (by saved IDs, or by prompt) and downloads them. Play either generated version from the context menu. "Wrong Song" button deletes mismatched downloads and triggers re-download.
 - **CD Master** — Create audio CD projects with track ordering, CD-TEXT metadata, cover art generation, and cross-platform ISO export via pycdlib.
 - **Distribution** — Upload finished songs to streaming platforms (Spotify, Apple Music, etc.) via DistroKid browser automation. Includes release form, genre mapping, cover art validation/resize, AI cover art generation (Segmind API), AI disclosure, and upload queue with login/2FA support.
 - **Analytics** — Song statistics, status breakdown charts, and generation history.
@@ -120,6 +120,9 @@ songfactory/
     base_worker.py         # BaseWorker(QThread) with stop flag, DB lifecycle
     browser_worker.py      # LalalsWorker QThread — submit/download pipeline
     lalals_driver.py       # Playwright browser driver for lalals.com
+    lalals_api.py          # lalals.com /api/backend client (Co-Producer workflow, projects)
+    lalals_recovery.py     # Recover missing downloads by saved IDs or prompt match
+    verify_sync_worker.py  # Verify & Sync — fill missing MP3/WAV/lyrics
     browser_profiles.py    # Centralized profile paths, cache clearing
     selector_health.py     # CSS selector health checks for lalals.com
     selector_registry.py   # Self-healing CSS selector registry with promote/demote learning

@@ -34,6 +34,7 @@ class HistoryImportDialog(QDialog):
 
         self._discovered_songs = []
         self._worker = None
+        self._download_all_pending = False
 
         self._build_ui()
         self._apply_styles()
@@ -62,8 +63,8 @@ class HistoryImportDialog(QDialog):
         source_row.addWidget(source_label)
 
         self.source_combo = QComboBox()
-        self.source_combo.addItem("Profile Page", "profile")
-        self.source_combo.addItem("Home/API (Legacy)", "legacy")
+        self.source_combo.addItem("Workspace API", "legacy")
+        self.source_combo.addItem("Profile Page (may not show all songs)", "profile")
         self.source_combo.setMinimumWidth(180)
         source_row.addWidget(self.source_combo)
         source_row.addStretch()
@@ -99,6 +100,14 @@ class HistoryImportDialog(QDialog):
         self.discover_btn = QPushButton("Discover History")
         self.discover_btn.clicked.connect(self._start_discovery)
         top_row.addWidget(self.discover_btn)
+
+        self.download_all_btn = QPushButton("Download All History")
+        self.download_all_btn.setToolTip(
+            "Discover every song in your lalals.com history and download "
+            "all of them that aren't already in the library."
+        )
+        self.download_all_btn.clicked.connect(self._start_download_all)
+        top_row.addWidget(self.download_all_btn)
 
         self.skip_existing_cb = QCheckBox("Skip already imported")
         self.skip_existing_cb.setChecked(True)
@@ -240,6 +249,11 @@ class HistoryImportDialog(QDialog):
             }}
         """)
 
+    def _start_download_all(self):
+        """Discover the full history, then import everything not yet imported."""
+        self._download_all_pending = True
+        self._start_discovery()
+
     def _start_discovery(self):
         """Launch the history import worker in discovery mode."""
         if not _HAS_IMPORTER:
@@ -250,6 +264,7 @@ class HistoryImportDialog(QDialog):
             return
 
         self.discover_btn.setEnabled(False)
+        self.download_all_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.status_label.setText("Opening browser to discover history...")
         self._discovered_songs = []
@@ -288,7 +303,7 @@ class HistoryImportDialog(QDialog):
             if eid == task_id:
                 return
 
-        # Check if already in DB — by task_id or title
+        # Check if already in DB — by task_id, conversion_id, or title
         already_imported = False
         title_match_id = None
         if self.skip_existing_cb.isChecked():
@@ -296,21 +311,39 @@ class HistoryImportDialog(QDialog):
                 import sqlite3
                 conn = sqlite3.connect(os.path.expanduser("~/.songfactory/songfactory.db"))
                 conn.row_factory = sqlite3.Row
+                # Check by task_id
                 existing_song = conn.execute(
                     "SELECT id, file_path_1 FROM songs WHERE task_id=?", (task_id,)
                 ).fetchone()
                 if existing_song and existing_song["file_path_1"]:
                     already_imported = True
                 elif not existing_song:
-                    # Check by title match
+                    # Check by conversion_id
+                    existing_song = conn.execute(
+                        "SELECT id, file_path_1 FROM songs "
+                        "WHERE conversion_id_1=? OR conversion_id_2=?",
+                        (task_id, task_id),
+                    ).fetchone()
+                    if existing_song and existing_song["file_path_1"]:
+                        already_imported = True
+                if not existing_song:
+                    # Check by title match — but skip generic titles
+                    # that could match multiple different songs
                     discovered_title = (
                         song_data.get("title")
                         or song_data.get("prompt", "")[:60]
                         or ""
                     )
-                    if discovered_title:
+                    # Strip V1/V2 suffix for matching
+                    clean_title = discovered_title
+                    for suffix in (" (V1)", " (V2)"):
+                        if clean_title.endswith(suffix):
+                            clean_title = clean_title[:-len(suffix)]
+                    # Skip title matching for short/generic titles
+                    if clean_title and len(clean_title) > 3:
                         title_row = conn.execute(
-                            "SELECT id, file_path_1 FROM songs WHERE LOWER(title)=LOWER(?)",
+                            "SELECT id, file_path_1 FROM songs "
+                            "WHERE LOWER(title)=LOWER(?) LIMIT 1",
                             (discovered_title,)
                         ).fetchone()
                         if title_row:
@@ -355,6 +388,7 @@ class HistoryImportDialog(QDialog):
     def _on_discovery_finished(self, count: int):
         """Discovery phase complete."""
         self.discover_btn.setEnabled(True)
+        self.download_all_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.import_btn.setEnabled(len(self._discovered_songs) > 0)
         self.status_label.setText(
@@ -363,7 +397,21 @@ class HistoryImportDialog(QDialog):
         )
         self._worker = None
 
+        if self._download_all_pending:
+            self._download_all_pending = False
+            self._select_all()
+            if not any(
+                self.table.cellWidget(r, 0) and self.table.cellWidget(r, 0).isChecked()
+                for r in range(self.table.rowCount())
+            ):
+                self.status_label.setText(
+                    f"All {len(self._discovered_songs)} song(s) are already imported."
+                )
+                return
+            self._start_import()
+
     def _on_import_error(self, message: str):
+        self._download_all_pending = False
         self.status_label.setText(f"Error: {message}")
 
     def _on_progress_update(self, message: str):
@@ -397,6 +445,7 @@ class HistoryImportDialog(QDialog):
             return
 
         self.import_btn.setEnabled(False)
+        self.download_all_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.status_label.setText(f"Importing {len(selected_task_ids)} song(s)...")
 
@@ -444,6 +493,7 @@ class HistoryImportDialog(QDialog):
     def _on_import_finished(self, count: int):
         self.progress_bar.setVisible(False)
         self.import_btn.setEnabled(True)
+        self.download_all_btn.setEnabled(True)
         self.status_label.setText(f"Import complete: {count} song(s) imported")
         self._worker = None
 

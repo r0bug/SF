@@ -28,6 +28,7 @@ The primary workflow tab for generating AI songs.
 - **Generated Prompt** — Editable prompt field with character counter (300 char target for lalals.com)
 - **Generated Lyrics** — Editable lyrics with verse/chorus/bridge structure markers
 - **Actions** — Save to Database, Queue for Lalals, Copy Prompt, Copy Lyrics
+- **No duplicates** — Saving and queueing the same generated song (in either order) updates one library entry; a queued song is never downgraded back to draft. A new generation creates a new entry
 
 ### Generation
 - Background QThread prevents UI freezing during API calls
@@ -78,6 +79,8 @@ Search the web, summarize content with AI, and import as lore entries.
 - AI-powered content summarization via Anthropic API
 - Category assignment and inline editing before saving
 - Background QThreads for search and summarization
+- **Summarize & Merge** — Check two or more search results; each is summarized, then Claude merges them into one lore entry (duplicate facts combined, every name/place/story kept, conflicting sources noted, all sources listed). Only the merged card is shown; if the merge fails the individual summaries are shown instead
+- **Merge Selected Summaries** — Every summary card has an "Include in merge" checkbox; merge any two or more (including edits and previously merged entries) into a new card labelled "Merged from N sources"
 
 ---
 
@@ -122,19 +125,25 @@ Browse, search, and manage all songs with automation controls.
 - **Browser Mode** — Playwright-based headless browser automation: submit songs to lalals.com, wait for processing, download results
 - **API Mode** — Direct submission via MusicGPT API with automatic polling and download
 - **Sync** — Import song details (prompt, lyrics, metadata) from lalals.com profile API
-- **History Import** — Discover and import previously generated songs from lalals.com account
+- **History Import** — Discover and import previously generated songs from lalals.com account (one library song per generated version, lyrics filled from project detail; in-progress generations are skipped)
+- **Download All History** — One click in the Import History dialog: discovers the whole history and imports every song not already in the library
+- **Play Version 2** — Context menu plays either generated take ("Play Song (Version 1)" / "Play Version 2")
 - Always headless — browser runs in background, cannot be interrupted by user interaction
 - Centralized browser profile at `~/.songfactory/profiles/lalals/` preserves login session
 - Retry with exponential backoff on download failures
 
 ### Error Recovery
-- **Wrong Song** — Orange button in the detail panel and "Wrong Song — Re-download" context menu action. Deletes all downloaded files (file_path_1, file_path_2, vocals, instrumental), removes empty parent directories, sets status to "error", and triggers automatic re-download if a `task_id` exists. If no task_id, suggests using "Recover Error Songs" or "Recover from Home Page". Available only when a downloaded file exists.
-- **Recover Error Songs** — Batch button that launches a headless browser, navigates to lalals.com home page, and downloads songs in error status by matching card titles
-- **Recover from Home Page** — Right-click context menu option for individual songs without task_ids
-- **Multi-strategy card matching** — Matches songs on the lalals.com home page by title, title prefix, prompt prefix, lyrics prefix, or word overlap (lalals generates its own song titles that may differ from the database)
-- **Project ID priority matching** — When `task_id` is available, cards are first matched by `data-project-id` attribute (exact match) before falling back to text-based matching, eliminating false positives from fuzzy text overlap
+All recovery paths share `automation/lalals_recovery.py`, so a failed "Song is Done - Refresh" can always be retried later:
+
+1. **Saved IDs** — the version IDs (`conversion_id_1/2`, or `task_id` for history imports) stored at submit time are looked up via `projects/front/get-one-by-id`
+2. **Prompt match** — songs without IDs are found in the full lalals history by their prompt; the newest finished generation (both versions) is used
+
+- **Re-download / Recover from Lalals** — Right-click a single song
+- **Recover Error Songs** — Batch-recover every song in `error` status
+- **Recover Downloads** — Batch-recover every song with lalals IDs but no audio file
+- A summary lists songs not found (still generating, failed on lalals, or audio no longer available)
+- **Wrong Song** — Orange button in the detail panel and "Wrong Song — Re-download" context menu action. Deletes all downloaded files (file_path_1, file_path_2, vocals, instrumental), removes empty parent directories, sets status to "error", and re-downloads via the recovery lookup. Available only when a downloaded file exists.
 - **Refresh Library** button reloads the song list from the database
-- Cards identified via `div[data-name="ProjectItem"]` with hover-reveal three-dot menu
 
 ### Download Verification
 - **Audio header validation** — Downloaded files are checked for valid MP3 (sync word `0xFF 0xE0` or ID3 tag), WAV (RIFF), OGG, or FLAC headers
@@ -152,17 +161,23 @@ Browse, search, and manage all songs with automation controls.
 - **Grouped selectors** — `prompt_textarea`, `lyrics_toggle`, `lyrics_textarea`, `generate_button`, `home_nav`
 - **Register-once semantics** — Default selector order is only written for new groups; learned ordering persists across sessions
 
-### Download Strategies (Priority Order)
-1. **Project API polling** — Poll `devapi.lalals.com/user/{uid}/projects` for completion status, use `track_url` or construct S3 URL from conversion IDs
-2. **Home page download** — Navigate to lalals.com home, find song card by `data-project-id` or text, click three-dot menu → Download → Full Song
-3. **Direct S3 URL** — Construct S3 URL from conversion IDs: `https://lalals.s3.amazonaws.com/conversions/standard/{cid}/{cid}.mp3`
+### lalals.com API (`automation/lalals_api.py`)
+lalals.com (2026 redesign) serves its backend through a same-origin proxy at `https://lalals.com/api/backend/`, authenticated by browser session cookies. All calls run inside the Playwright page (`page.evaluate(fetch)`); mutating requests send `X-Lalals-Auth-Version: 2` and the `X-Lalals-CSRF` token from `GET auth/session` (which also serves as the login check — 401 when logged out). The old `devapi.lalals.com` host no longer exists.
 
-### API Capture (Two-Phase)
-- **Phase 1** — `POST do-music-ai` response captured for `conversion_id_1` and `conversion_id_2`
-- **Phase 2** — `POST user/{uid}/projects` response matched by conversion ID to extract real `taskId` from `queue_task.output_payload.taskId`, plus `user_id` for later polling
-- Polls every 500ms for up to 30 seconds (configurable via `timeouts.py`)
-- Captures `auth_token` and `user_id` from request headers/URLs for authenticated API calls
-- Debug screenshots saved to `~/.songfactory/screenshots/` on capture failure
+### Submission (Co-Producer workflow)
+1. `POST v1/workflows` — `{workflowId: "produce_track_v1", initialContext: {prompt, lyrics, workflow_mode: "MUSIC_AI", make_instrumental, extendDuration}}`
+2. `POST v1/workflows/{projectId}/action` — `{action: "generate_music_ai", payload: {..., prompt_intensity, lyrics_intensity, uniqueness}}` (0.6 defaults, matching the UI)
+3. The two generated versions appear in `POST user/{uid}/projects` within seconds; their IDs are stored as `conversion_id_1/2` (matched by prompt + submit time)
+4. Workflow states: INITIAL, GENERATING_LYRICS, WAITING_FOR_LYRICS_APPROVAL, GENERATING_AUDIO, PARTIAL_COMPLETED, COMPLETED, ERROR
+
+No form filling or DOM selectors are needed, so page redesigns don't break submission.
+
+### Download Strategies (Priority Order)
+1. **Projects API** — Look up the version IDs in `user/{uid}/projects` and download each `track_url`
+2. **Project detail** — `projects/front/get-one-by-id/{id}` per version
+3. **S3 fallback** — Built URLs are a last resort only: new generations are served from `cdn1.musicgpt.com` (not derivable), mid-2026 ones from `conversions/web/standard/`, older ones from `conversions/standard/` (also used for early-2026 projects whose `track_url` is broken)
+
+History pagination sends the response's `nextCursor` (`{page, limit}`) as top-level body fields.
 
 ### Song Statuses
 | Status | Description |

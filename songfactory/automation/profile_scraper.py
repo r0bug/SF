@@ -1,5 +1,11 @@
 """Profile page scraper for lalals.com user profiles.
 
+DEPRECATED (2026-02): lalals.com redesigned their profile page.
+The data-name="ProjectTable" element no longer exists, and AI-generated
+songs do not appear as public profile tracks (profile shows 0 Tracks).
+Use the devapi/workspace approach instead (HistoryImportWorker with
+profile_mode=False, or SongDetailSyncer which now uses devapi directly).
+
 Navigates to https://lalals.com/user/{username}/audio and extracts:
 - Song list (titles, project IDs) via "Load More" button + API interception
 - Lyrics (by clicking into song detail views)

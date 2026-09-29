@@ -4,7 +4,7 @@ import re
 import logging
 import urllib.request
 import urllib.error
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from automation.atomic_io import atomic_write_fn
@@ -48,19 +48,53 @@ class DownloadManager:
         text = text.strip('-')
         return text or "untitled"
 
-    def get_song_dir(self, song_title: str, date_prefix: str = "") -> Path:
+    @staticmethod
+    def _safe_title(text: str) -> str:
+        """Make a song title filesystem-safe while keeping it readable.
+
+        Example: "Treasure on Second Street" -> "Treasure on Second Street"
+                 "Rock/Metal: Unchained!" -> "Rock Metal - Unchained!"
+        """
+        # Replace path separators and other dangerous chars
+        text = text.strip()
+        text = re.sub(r'[/\\:*?"<>|]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        # Filesystems cap names at 255 bytes; lalals sometimes uses a whole
+        # prompt (with lyrics) as the track name.  Leave room for suffixes.
+        if len(text.encode("utf-8")) > 80:
+            text = text.encode("utf-8")[:80].decode("utf-8", "ignore").rstrip(" .-")
+        return text or "Untitled"
+
+    def get_song_dir(self, song_title: str, date_prefix: str = "",
+                     filename: str = "") -> Path:
         """Create and return a directory for this song's files.
+
+        If the directory already has files from a different song (duplicate
+        title), appends a timestamp to create a unique directory.
 
         Args:
             song_title: The song title.
             date_prefix: Date string prefix for the directory name.
                 When empty (default), uses today's date (YYYY-MM-DD).
+            filename: The file about to be written.  When given, only that
+                exact file already existing counts as a duplicate — so v2
+                and WAV files of the same song land next to its v1.
 
-        Example: ~/Music/SongFactory/2026-02-12_treasure-on-second-street/
+        Example: ~/Music/SongFactory/2026-02-12_Treasure on Second Street/
         """
-        slug = self._slugify(song_title)
+        safe = self._safe_title(song_title)
         prefix = date_prefix or date.today().isoformat()
-        song_dir = self.base_dir / f"{prefix}_{slug}"
+        song_dir = self.base_dir / f"{prefix}_{safe}"
+
+        # If the dir already has audio files, this might be a duplicate title.
+        if filename:
+            duplicate = (song_dir / filename).exists()
+        else:
+            duplicate = song_dir.exists() and any(song_dir.glob("*_v1.*"))
+        if duplicate:
+            ts = datetime.now().strftime("%H%M%S")
+            song_dir = self.base_dir / f"{prefix}_{safe}_{ts}"
+
         song_dir.mkdir(parents=True, exist_ok=True)
         return song_dir
 
@@ -75,13 +109,14 @@ class DownloadManager:
             date_prefix: Date string prefix for the directory name.
 
         Returns:
-            Path like ~/Music/SongFactory/2026-02-12_treasure-on-second-street/treasure-on-second-street_vocals.mp3
+            Path like ~/Music/SongFactory/2026-02-12_Treasure on Second Street/Treasure on Second Street_vocals.mp3
         """
-        slug = self._slugify(song_title)
-        song_dir = self.get_song_dir(song_title, date_prefix=date_prefix)
+        safe = self._safe_title(song_title)
         # Sanitize track_type for filename
         safe_type = re.sub(r'[^\w]', '_', track_type.lower().strip())
-        filename = f"{slug}_{safe_type}{extension}"
+        filename = f"{safe}_{safe_type}{extension}"
+        song_dir = self.get_song_dir(song_title, date_prefix=date_prefix,
+                                     filename=filename)
         return song_dir / filename
 
     def get_file_path(self, song_title: str, version: int, extension: str = ".mp3",
@@ -95,11 +130,12 @@ class DownloadManager:
             date_prefix: Date string prefix for the directory name.
 
         Returns:
-            Path like ~/Music/SongFactory/2026-02-12_treasure-on-second-street/treasure-on-second-street_v1.mp3
+            Path like ~/Music/SongFactory/2026-02-12_Treasure on Second Street/Treasure on Second Street_v1.mp3
         """
-        slug = self._slugify(song_title)
-        song_dir = self.get_song_dir(song_title, date_prefix=date_prefix)
-        filename = f"{slug}_v{version}{extension}"
+        safe = self._safe_title(song_title)
+        filename = f"{safe}_v{version}{extension}"
+        song_dir = self.get_song_dir(song_title, date_prefix=date_prefix,
+                                     filename=filename)
         return song_dir / filename
 
     def save_playwright_download(self, download, song_title: str, version: int) -> Path:

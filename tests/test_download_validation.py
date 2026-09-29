@@ -413,35 +413,62 @@ class TestDatePrefixedFolders:
     """Tests for date-prefixed download directory naming."""
 
     def test_get_song_dir_includes_date(self, tmp_path):
-        """Directory name follows YYYY-MM-DD_slug pattern."""
+        """Directory name follows YYYY-MM-DD_Title pattern."""
         dm = DownloadManager(str(tmp_path / "dl"))
         song_dir = dm.get_song_dir("Treasure on Second Street", date_prefix="2026-02-12")
-        assert song_dir.name == "2026-02-12_treasure-on-second-street"
+        assert song_dir.name == "2026-02-12_Treasure on Second Street"
         assert song_dir.exists()
 
     def test_get_song_dir_custom_date_prefix(self, tmp_path):
         """Explicit date_prefix is used verbatim."""
         dm = DownloadManager(str(tmp_path / "dl"))
         song_dir = dm.get_song_dir("My Song", date_prefix="2025-01-01")
-        assert song_dir.name == "2025-01-01_my-song"
+        assert song_dir.name == "2025-01-01_My Song"
 
     def test_get_song_dir_default_is_today(self, tmp_path):
         """Default (empty) date_prefix uses today's date."""
         dm = DownloadManager(str(tmp_path / "dl"))
         song_dir = dm.get_song_dir("Hello World")
         today = date.today().isoformat()
-        assert song_dir.name == f"{today}_hello-world"
+        assert song_dir.name == f"{today}_Hello World"
 
     def test_get_file_path_with_date(self, tmp_path):
         """Full file path includes date in directory component."""
         dm = DownloadManager(str(tmp_path / "dl"))
         fp = dm.get_file_path("Test Song", 1, date_prefix="2026-03-15")
-        assert "2026-03-15_test-song" in str(fp)
-        assert fp.name == "test-song_v1.mp3"
+        assert "2026-03-15_Test Song" in str(fp)
+        assert fp.name == "Test Song_v1.mp3"
 
     def test_get_track_file_path_with_date(self, tmp_path):
         """Track file path includes date in directory component."""
         dm = DownloadManager(str(tmp_path / "dl"))
         fp = dm.get_track_file_path("Test Song", "vocals", date_prefix="2026-04-20")
-        assert "2026-04-20_test-song" in str(fp)
-        assert fp.name == "test-song_vocals.mp3"
+        assert "2026-04-20_Test Song" in str(fp)
+        assert fp.name == "Test Song_vocals.mp3"
+
+    def test_get_song_dir_duplicate_adds_timestamp(self, tmp_path):
+        """Duplicate title on same date gets a timestamp suffix."""
+        dm = DownloadManager(str(tmp_path / "dl"))
+        dir1 = dm.get_song_dir("Pulse", date_prefix="2026-02-27")
+        # Create a v1 file to simulate an existing song
+        (dir1 / "Pulse_v1.mp3").write_bytes(b"fake")
+        dir2 = dm.get_song_dir("Pulse", date_prefix="2026-02-27")
+        assert dir1 != dir2
+        assert dir2.name.startswith("2026-02-27_Pulse_")
+
+    def test_same_song_versions_share_dir(self, tmp_path):
+        """v2 and WAV of the same song land beside its v1 (no timestamp dir)."""
+        dm = DownloadManager(str(tmp_path / "dl"))
+        v1 = dm.get_file_path("Pulse", 1, ".mp3", date_prefix="2026-02-27")
+        v1.write_bytes(b"fake")
+        v2 = dm.get_file_path("Pulse", 2, ".mp3", date_prefix="2026-02-27")
+        wav = dm.get_file_path("Pulse", 1, ".wav", date_prefix="2026-02-27")
+        assert v2.parent == v1.parent == wav.parent
+
+    def test_duplicate_title_file_gets_new_dir(self, tmp_path):
+        """Writing a v1 that already exists means a different same-titled song."""
+        dm = DownloadManager(str(tmp_path / "dl"))
+        first = dm.get_file_path("Pulse", 1, ".mp3", date_prefix="2026-02-27")
+        first.write_bytes(b"fake")
+        second = dm.get_file_path("Pulse", 1, ".mp3", date_prefix="2026-02-27")
+        assert second.parent != first.parent

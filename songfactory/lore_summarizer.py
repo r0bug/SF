@@ -29,6 +29,35 @@ information present in the source material.
 Respond with ONLY the summary text, no preamble or extra formatting."""
 
 
+_MERGE_SYSTEM_PROMPT = """\
+You are a research assistant for a songwriter who writes songs about Yakima, Washington \
+and the people, places, and stories connected to it.
+
+You will receive several research summaries on related topics, each from a different \
+source. Merge them into ONE cohesive, songwriter-relevant lore entry:
+- Combine overlapping facts once; do not repeat the same detail
+- Keep every distinct name, place, date, story, anecdote, and bit of local color
+- Organize by theme or chronology rather than by source
+- If sources disagree, keep both versions and note the discrepancy briefly
+- Do NOT invent details — only use information present in the summaries
+
+Write in a factual, note-taking style with short paragraphs or bullet points, \
+roughly 200-700 words depending on how much material there is.
+
+Respond in exactly this format:
+TITLE: <a short, specific title for the merged entry>
+
+<the merged summary text>"""
+
+
+def _strip_source_lines(text: str) -> str:
+    """Drop the trailing 'Source: <url>' line added by summarize()."""
+    lines = text.rstrip().splitlines()
+    while lines and (lines[-1].startswith("Source:") or not lines[-1].strip()):
+        lines.pop()
+    return "\n".join(lines)
+
+
 class LoreSummarizer:
     """Summarizes web content into lore entries via the Anthropic API."""
 
@@ -78,4 +107,65 @@ class LoreSummarizer:
             "content": summary_text,
             "category": category,
             "source_url": url,
+        }
+
+    def merge(
+        self,
+        summaries: list[dict],
+        category: str = "general",
+        title_hint: str = "",
+    ) -> dict:
+        """Merge several summaries into one deduplicated lore entry.
+
+        Args:
+            summaries: Dicts with ``title``, ``content`` and ``source_url``
+                (as returned by ``summarize()`` or edited in the UI).
+            category: Lore category for the merged entry.
+            title_hint: Optional topic (e.g. the search query) to steer
+                the merged title.
+
+        Returns:
+            dict with keys: title, content, category, source_url (first
+            source), source_urls (all sources), merged_count
+        """
+        if len(summaries) < 2:
+            raise ValueError("Need at least two summaries to merge")
+
+        sources = [s.get("source_url", "") for s in summaries]
+        sources = list(dict.fromkeys(u for u in sources if u))
+
+        parts = []
+        if title_hint:
+            parts.append(f"Research topic: {title_hint}\n")
+        for i, s in enumerate(summaries, start=1):
+            parts.append(
+                f"--- Summary {i}: {s.get('title', '')} "
+                f"({s.get('source_url', 'unknown source')}) ---\n"
+                f"{_strip_source_lines(s.get('content', ''))}\n"
+            )
+
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=2048,
+            system=_MERGE_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": "\n".join(parts)}],
+        )
+        text = response.content[0].text.strip()
+
+        title = title_hint or summaries[0].get("title", "Merged lore")
+        first, _, rest = text.partition("\n")
+        if first.upper().startswith("TITLE:"):
+            title = first.split(":", 1)[1].strip() or title
+            text = rest.strip()
+
+        if sources:
+            text += "\n\nSources:\n" + "\n".join(f"- {u}" for u in sources)
+
+        return {
+            "title": title,
+            "content": text,
+            "category": category,
+            "source_url": sources[0] if sources else "",
+            "source_urls": sources,
+            "merged_count": len(summaries),
         }
