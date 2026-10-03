@@ -21,6 +21,19 @@ except ImportError:
 
 from theme import Theme
 
+# Workers still running when the dialog drops them. Holding a reference until
+# QThread.finished keeps Python from destroying a live thread, which makes Qt
+# abort the whole app ("QThread: Destroyed while thread is still running").
+_retired_workers = set()
+
+
+def _retire_worker(worker):
+    """Keep *worker* alive until its thread exits, then release it."""
+    if worker is None or not worker.isRunning():
+        return
+    _retired_workers.add(worker)
+    worker.finished.connect(lambda: _retired_workers.discard(worker))
+
 
 class HistoryImportDialog(QDialog):
     """Dialog for importing song history from lalals.com."""
@@ -283,6 +296,7 @@ class HistoryImportDialog(QDialog):
         }
 
         db_path = os.path.expanduser("~/.songfactory/songfactory.db")
+        _retire_worker(self._worker)
         self._worker = HistoryImportWorker(
             db_path, config,
             profile_mode=is_profile,
@@ -395,6 +409,7 @@ class HistoryImportDialog(QDialog):
             f"Discovery complete: {len(self._discovered_songs)} song(s) found. "
             "Select songs and click 'Import Selected'."
         )
+        _retire_worker(self._worker)
         self._worker = None
 
         if self._download_all_pending:
@@ -473,6 +488,7 @@ class HistoryImportDialog(QDialog):
         }
 
         db_path = os.path.expanduser("~/.songfactory/songfactory.db")
+        _retire_worker(self._worker)
         self._worker = HistoryImportWorker(
             db_path, config,
             selected_task_ids=selected_task_ids,
@@ -495,11 +511,17 @@ class HistoryImportDialog(QDialog):
         self.import_btn.setEnabled(True)
         self.download_all_btn.setEnabled(True)
         self.status_label.setText(f"Import complete: {count} song(s) imported")
+        _retire_worker(self._worker)
         self._worker = None
 
-    def close(self):
-        """Stop worker if running before closing."""
-        if self._worker and self._worker.isRunning():
+    def done(self, result):
+        """Stop any running worker on close/Esc/accept without blocking the UI.
+
+        The dialog is discarded once exec() returns, so the worker is retired
+        (kept referenced) until its thread actually exits.
+        """
+        if self._worker is not None:
             self._worker.stop()
-            self._worker.wait(5000)
-        super().close()
+            _retire_worker(self._worker)
+            self._worker = None
+        super().done(result)
