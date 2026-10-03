@@ -80,13 +80,37 @@ def _norm_lyrics(text):
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
+_FP_CACHE_PATH = os.path.join(STAGE_ROOT, "fingerprints.json")
+_fp_cache = None
+
+
 def audio_fingerprint(path):
-    """Hash of the decoded audio, so re-tagged copies of one recording match."""
+    """Hash of the decoded audio, so re-tagged copies of one recording match.
+
+    Decoding is slow, so results are cached per (path, size, mtime)."""
+    global _fp_cache
+    if _fp_cache is None:
+        try:
+            with open(_FP_CACHE_PATH) as f:
+                _fp_cache = json.load(f)
+        except (OSError, ValueError):
+            _fp_cache = {}
+    st = os.stat(path)
+    key = f"{path}|{st.st_size}|{int(st.st_mtime)}"
+    if key in _fp_cache:
+        return _fp_cache[key]
     out = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", path, "-map", "0:a", "-f", "md5", "-"],
         capture_output=True, text=True,
     ).stdout.strip()
-    return out or path
+    fp = out or path
+    _fp_cache[key] = fp
+    os.makedirs(STAGE_ROOT, exist_ok=True)
+    tmp = _FP_CACHE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(_fp_cache, f)
+    os.replace(tmp, _FP_CACHE_PATH)
+    return fp
 
 
 def group_songs(rows):
