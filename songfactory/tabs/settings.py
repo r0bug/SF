@@ -29,7 +29,7 @@ import os
 from tabs.base_tab import BaseTab
 from theme import Theme
 from secure_config import get_secret, set_secret, SENSITIVE_KEYS
-from ai_models import get_model_choices, DEFAULT_MODEL
+from ai_models import get_model_choices, DEFAULT_MODEL, resolve_model
 from event_bus import event_bus
 
 
@@ -612,7 +612,7 @@ class SettingsTab(BaseTab):
         )
 
         # AI model - use stored model ID
-        model = self.db.get_config("ai_model", "")
+        model = resolve_model(self.db.get_config("ai_model", ""))
         for i in range(self.model_combo.count()):
             if self.model_combo.itemData(i) == model:
                 self.model_combo.setCurrentIndex(i)

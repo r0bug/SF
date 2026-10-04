@@ -99,13 +99,16 @@ class ArtPromptWorker(QThread):
             if self._style_notes:
                 user_msg += f"\n\nStyle notes: {self._style_notes}"
 
-            response = client.messages.create(
+            from ai_models import create_message, response_text
+
+            response = create_message(
+                client,
                 model=self._model,
-                max_tokens=300,
+                max_tokens=4000,
                 system=_ART_PROMPT_SYSTEM,
                 messages=[{"role": "user", "content": user_msg}],
             )
-            self.prompt_ready.emit(response.content[0].text.strip())
+            self.prompt_ready.emit(response_text(response).strip())
         except Exception as exc:
             self.error.emit(str(exc))
 

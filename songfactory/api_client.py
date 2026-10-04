@@ -12,7 +12,7 @@ from typing import Optional
 
 from anthropic import Anthropic
 
-from ai_models import DEFAULT_MODEL
+from ai_models import DEFAULT_MODEL, create_message, resolve_model, response_text
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ class SongGenerator:
 
     def __init__(self, api_key: str, model: str | None = None):
         self.client = Anthropic(api_key=api_key)
-        self.model = model or DEFAULT_MODEL
+        self.model = resolve_model(model or DEFAULT_MODEL)
 
     # ------------------------------------------------------------------
     # Public API
@@ -101,16 +101,21 @@ class SongGenerator:
         )
 
         try:
-            response = self.client.messages.create(
+            # Room for adaptive thinking plus the full song
+            response = create_message(
+                self.client,
                 model=self.model,
-                max_tokens=4096,
+                max_tokens=16000,
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             )
         except Exception as exc:
             raise SongGenerationError(f"Anthropic API call failed: {exc}") from exc
 
-        raw_text = response.content[0].text
+        try:
+            raw_text = response_text(response)
+        except RuntimeError as exc:
+            raise SongGenerationError(str(exc)) from exc
         return self._parse_response(raw_text)
 
     def test_connection(self) -> bool:
@@ -120,9 +125,10 @@ class SongGenerator:
             True if the API responds successfully, False otherwise.
         """
         try:
-            self.client.messages.create(
+            create_message(
+                self.client,
                 model=self.model,
-                max_tokens=16,
+                max_tokens=1024,
                 messages=[{"role": "user", "content": "Say OK"}],
             )
             return True

@@ -7,7 +7,7 @@ lore entries focusing on names, places, stories, and cultural details.
 
 from anthropic import Anthropic
 
-from ai_models import DEFAULT_MODEL
+from ai_models import DEFAULT_MODEL, create_message, resolve_model, response_text
 
 
 _SYSTEM_PROMPT = """\
@@ -63,7 +63,7 @@ class LoreSummarizer:
 
     def __init__(self, api_key: str, model: str | None = None):
         self.client = Anthropic(api_key=api_key)
-        self.model = model or DEFAULT_MODEL
+        self.model = resolve_model(model or DEFAULT_MODEL)
 
     def summarize(
         self,
@@ -92,14 +92,15 @@ class LoreSummarizer:
 
         user_message += f"Content to summarize:\n\n{content}"
 
-        response = self.client.messages.create(
+        response = create_message(
+            self.client,
             model=self.model,
-            max_tokens=1024,
+            max_tokens=8000,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
         )
 
-        summary_text = response.content[0].text.strip()
+        summary_text = response_text(response).strip()
         summary_text += f"\n\nSource: {url}"
 
         return {
@@ -144,13 +145,14 @@ class LoreSummarizer:
                 f"{_strip_source_lines(s.get('content', ''))}\n"
             )
 
-        response = self.client.messages.create(
+        response = create_message(
+            self.client,
             model=self.model,
-            max_tokens=2048,
+            max_tokens=16000,
             system=_MERGE_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": "\n".join(parts)}],
         )
-        text = response.content[0].text.strip()
+        text = response_text(response).strip()
 
         title = title_hint or summaries[0].get("title", "Merged lore")
         first, _, rest = text.partition("\n")

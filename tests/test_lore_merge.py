@@ -23,7 +23,7 @@ def _summarizer(reply):
         s = LoreSummarizer(api_key="k", model="m")
     s.client = MagicMock()
     s.client.messages.create.return_value = SimpleNamespace(
-        content=[SimpleNamespace(text=reply)])
+        content=[SimpleNamespace(type="text", text=reply)])
     return s
 
 
