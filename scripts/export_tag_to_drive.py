@@ -137,7 +137,9 @@ def group_songs(rows):
         takes = {}
         for r in grp:
             title = (r["title"] or "").strip()
-            m = _VERSION_RE.search(title)
+            # "(V1)"/"(V2)" rows from a history import hold one version each;
+            # a row with both files is a whole take whatever its title says
+            m = _VERSION_RE.search(title) if not r["file_path_2"] else None
             if m:
                 take = takes.setdefault(("v", _VERSION_RE.sub("", title)), {})
                 if r["file_path_1"]:

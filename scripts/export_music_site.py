@@ -162,7 +162,7 @@ def build_song(key, grp):
     takes = collections.OrderedDict()
     for r in grp:
         t = r["title"] or ""
-        m = _V_RE.search(t)
+        m = _V_RE.search(t) if not r["file_path_2"] else None
         if m:
             take = takes.setdefault(("v", clean_title(t)), {})
             if r["file_path_1"]:
