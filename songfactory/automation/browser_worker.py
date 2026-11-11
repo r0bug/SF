@@ -22,6 +22,44 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = LOG_DIR / "browser_state.json"
 
 
+# Columns describing a song's current recording (restored on a failed retry)
+_PREVIOUS_TAKE_COLS = (
+    "status", "file_path_1", "file_path_2", "file_size_1", "file_size_2",
+    "task_id", "conversion_id_1", "conversion_id_2", "audio_url_1", "audio_url_2",
+)
+
+
+def _handle_failed_take(conn, song_id: int, previous: dict, reason: str) -> str:
+    """Record a failed generation without losing the previous recording.
+
+    If the song already had audio on disk, its links are restored and the
+    song keeps its status; otherwise it is marked 'error'.
+
+    Returns:
+        The note stored on the song.
+    """
+    fp1 = previous.get("file_path_1") or ""
+    if fp1 and Path(fp1).exists():
+        note = f"Re-generation failed ({reason}) — kept the previous recording"
+        restore = dict(previous)
+        restore["status"] = previous.get("status") or "completed"
+        sets = ", ".join(f"{k}=?" for k in restore)
+        conn.execute(
+            f"UPDATE songs SET {sets}, notes=?, updated_at=CURRENT_TIMESTAMP "
+            "WHERE id=?",
+            (*restore.values(), note, song_id),
+        )
+    else:
+        note = reason
+        conn.execute(
+            "UPDATE songs SET status='error', file_path_1='', file_path_2='', "
+            "notes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (note, song_id),
+        )
+    conn.commit()
+    return note
+
+
 class LalalsWorker(QThread):
     """Background worker that processes the lalals queue via browser automation."""
 
@@ -212,6 +250,9 @@ class LalalsWorker(QThread):
                 prompt = song['prompt']
                 lyrics = song['lyrics']
                 self._current_song_id = song_id
+                # Previous recording (re-queued songs): restored if the new
+                # generation fails, so a failed retry never unlinks it
+                previous = {k: song.get(k) for k in _PREVIOUS_TAKE_COLS}
 
                 self.song_started.emit(song_id, title)
                 self.progress_update.emit(
@@ -288,33 +329,53 @@ class LalalsWorker(QThread):
                         )
                     conn.commit()
 
-                    # ---- WAIT for user to click Refresh ----
+                    # ---- WAIT for lalals to finish (or a manual Refresh) ----
+                    from timeouts import TIMEOUTS
                     self.awaiting_refresh.emit(song_id, title)
                     self.progress_update.emit(
-                        f"'{title}' submitted — click Refresh when generation is done"
+                        f"'{title}' submitted — waiting for lalals to finish "
+                        "(downloads automatically; Refresh forces a check)"
                     )
-                    logger.info(f"Song {song_id} submitted, waiting for refresh...")
+                    logger.info(f"Song {song_id} submitted, waiting for completion...")
 
+                    poll_every = TIMEOUTS.get("generation_poll_s", 20)
+                    gen_state, gen_reason = "pending", ""
+                    last_poll = time.time()
                     self._refresh_requested = False
                     while not self._refresh_requested and not self._stop_flag:
+                        if time.time() - last_poll >= poll_every:
+                            last_poll = time.time()
+                            try:
+                                gen_state, gen_reason = driver.check_generation(task_data)
+                            except Exception as e:
+                                logger.debug(f"Generation status check failed: {e}")
+                            if gen_state != "pending":
+                                break
                         time.sleep(1)
 
                     if self._stop_flag:
-                        logger.info("Stop flag set during refresh wait")
+                        logger.info("Stop flag set during completion wait")
                         break
 
-                    # ---- REFRESH: Download the song ----
+                    if self._refresh_requested:
+                        # Manual Refresh: take one fresh status reading
+                        try:
+                            gen_state, gen_reason = driver.check_generation(task_data)
+                        except Exception:
+                            pass
                     self._refresh_requested = False
-                    self.progress_update.emit(
-                        f"Refreshing — downloading '{title}'..."
+                    generation_failed = gen_state == "failed"
+                    logger.info(
+                        f"Song {song_id}: lalals status={gen_state}"
+                        + (f" ({gen_reason})" if gen_reason else "")
                     )
-                    logger.info(f"Refresh received for song {song_id}, downloading...")
 
-                    # Post-refresh delay: S3 files may still be propagating
-                    from timeouts import TIMEOUTS
-                    post_delay = TIMEOUTS.get("post_refresh_delay_s", 5)
-                    logger.info(f"Post-refresh delay: {post_delay}s")
-                    time.sleep(post_delay)
+                    # ---- Download the song ----
+                    if not generation_failed:
+                        self.progress_update.emit(f"Downloading '{title}'...")
+                        # Brief delay: files may still be propagating
+                        post_delay = TIMEOUTS.get("post_refresh_delay_s", 5)
+                        time.sleep(post_delay)
 
                     from automation.retry import retry_call
                     from automation.download_manager import DownloadVerificationError
@@ -325,112 +386,89 @@ class LalalsWorker(QThread):
                     actual_size_2 = 0
                     metadata = {}
 
-                    # Strategy 1: API-based download.  Version IDs that
-                    # weren't visible at submit time are resolved here
-                    # (by prompt + submit time) via task_data.
-                    def _strategy_1():
-                        nonlocal metadata
-                        m = driver.fetch_fresh_urls(
-                            task_id, auth_token, cid1, cid2,
-                            user_id=user_id,
-                            project_ids=project_ids,
-                            task_data=task_data,
-                        )
-                        if m:
-                            p = driver.download_songs_v2(
-                                m, download_dir, title
+                    if not generation_failed:
+                        # Strategy 1: API-based download.  Version IDs that
+                        # weren't visible at submit time are resolved here
+                        # (by prompt + submit time) via task_data.
+                        def _strategy_1():
+                            nonlocal metadata
+                            m = driver.fetch_fresh_urls(
+                                task_id, auth_token, cid1, cid2,
+                                user_id=user_id,
+                                project_ids=project_ids,
+                                task_data=task_data,
                             )
-                            return m, p
-                        return m, []
-
-                    try:
-                        metadata, paths = retry_call(
-                            _strategy_1,
-                            max_attempts=3,
-                            backoff_base=2,
-                        )
-                        if len(paths) >= 1:
-                            file_path_1 = str(paths[0])
-                            actual_size_1 = Path(paths[0]).stat().st_size
-                        if len(paths) >= 2:
-                            file_path_2 = str(paths[1])
-                            actual_size_2 = Path(paths[1]).stat().st_size
-                        logger.info(
-                            f"API download: {len(paths)} file(s)"
-                        )
-                    except Exception as e:
-                        logger.warning(f"API download failed: {e}")
-
-                    # Strategy 2: Home page three-dot menu download
-                    # (legacy v4 fallback — may not work on lalals v5)
-                    if not file_path_1:
-                        def _strategy_2():
-                            driver.go_to_home_page()
-                            page.wait_for_timeout(3000)
-                            return driver.download_from_home(
-                                title, download_dir,
-                                prompt=prompt, lyrics=lyrics,
-                                task_id=task_id,
-                            )
+                            if m:
+                                p = driver.download_songs_v2(
+                                    m, download_dir, title
+                                )
+                                return m, p
+                            return m, []
 
                         try:
-                            logger.info("Trying Home page download fallback...")
-                            paths = retry_call(
-                                _strategy_2,
-                                max_attempts=2,
-                                backoff_base=3,
+                            metadata, paths = retry_call(
+                                _strategy_1,
+                                max_attempts=3,
+                                backoff_base=2,
                             )
-                            if paths:
+                            if len(paths) >= 1:
                                 file_path_1 = str(paths[0])
                                 actual_size_1 = Path(paths[0]).stat().st_size
-                                logger.info(f"Home page download: {paths[0]}")
-                                if len(paths) >= 2:
-                                    file_path_2 = str(paths[1])
-                                    actual_size_2 = Path(paths[1]).stat().st_size
+                            if len(paths) >= 2:
+                                file_path_2 = str(paths[1])
+                                actual_size_2 = Path(paths[1]).stat().st_size
+                            logger.info(
+                                f"API download: {len(paths)} file(s)"
+                            )
                         except Exception as e:
-                            logger.warning(f"Home page download failed: {e}")
+                            logger.warning(f"API download failed: {e}")
 
-                    # Strategy 3: If we have file_path_1 but not file_path_2,
-                    # try to grab the second version via direct URL download
-                    if file_path_1 and not file_path_2:
-                        url_2 = metadata.get("audio_url_2")
-                        if not url_2:
-                            # Build S3 URL from conversion_id_2
-                            c2 = metadata.get("conversion_id_2") or cid2
-                            if c2:
-                                from automation.lalals_api import S3_BASE
-                                url_2 = f"{S3_BASE}/{c2}/{c2}.mp3"
-                        if url_2:
-                            def _strategy_3():
-                                from automation.download_manager import DownloadManager
-                                dm2 = DownloadManager(download_dir)
-                                return dm2.save_from_url(url_2, title, 2)
+                        # Strategy 3: If we have file_path_1 but not file_path_2,
+                        # try to grab the second version via direct URL download
+                        if file_path_1 and not file_path_2:
+                            url_2 = metadata.get("audio_url_2")
+                            if not url_2:
+                                # Build S3 URL from conversion_id_2
+                                c2 = metadata.get("conversion_id_2") or cid2
+                                if c2:
+                                    from automation.lalals_api import S3_BASE
+                                    url_2 = f"{S3_BASE}/{c2}/{c2}.mp3"
+                            if url_2:
+                                def _strategy_3():
+                                    from automation.download_manager import DownloadManager
+                                    dm2 = DownloadManager(download_dir)
+                                    return dm2.save_from_url(url_2, title, 2)
 
-                            try:
-                                p2 = retry_call(
-                                    _strategy_3,
-                                    max_attempts=3,
-                                    backoff_base=2,
-                                )
-                                file_path_2 = str(p2)
-                                actual_size_2 = Path(p2).stat().st_size
-                                logger.info(f"Version 2 via URL: {p2}")
-                            except Exception as e:
-                                logger.warning(f"Version 2 URL download failed: {e}")
+                                try:
+                                    p2 = retry_call(
+                                        _strategy_3,
+                                        max_attempts=3,
+                                        backoff_base=2,
+                                    )
+                                    file_path_2 = str(p2)
+                                    actual_size_2 = Path(p2).stat().st_size
+                                    logger.info(f"Version 2 via URL: {p2}")
+                                except Exception as e:
+                                    logger.warning(f"Version 2 URL download failed: {e}")
 
-                    # Also try WAV versions alongside MP3 (same S3 key, .wav);
-                    # newer generations often have no public WAV — best effort
-                    for _ver in (1, 2):
-                        _mp3_url = metadata.get(f"audio_url_{_ver}") or ""
-                        if _mp3_url.endswith(".mp3"):
-                            wav_url = _mp3_url[:-4] + ".wav"
-                            try:
-                                from automation.download_manager import DownloadManager
-                                _dm = DownloadManager(download_dir)
-                                _dm.save_from_url(wav_url, title, _ver)
-                                logger.info(f"Downloaded WAV v{_ver} for {title}")
-                            except Exception as _e:
-                                logger.debug(f"WAV download failed v{_ver}: {_e}")
+                        # Also try WAV versions alongside MP3 (same S3 key, .wav);
+                        # newer generations often have no public WAV — best effort
+                        for _ver in (1, 2):
+                            _mp3_url = metadata.get(f"audio_url_{_ver}") or ""
+                            _mp3_path = file_path_1 if _ver == 1 else file_path_2
+                            if _mp3_url.endswith(".mp3") and _mp3_path:
+                                wav_url = _mp3_url[:-4] + ".wav"
+                                try:
+                                    from automation.download_manager import DownloadManager
+                                    _dm = DownloadManager(download_dir)
+                                    # Beside its MP3, not a separately chosen dir
+                                    _dm.save_from_url(
+                                        wav_url, title, _ver,
+                                        target_path=Path(_mp3_path).with_suffix(".wav"),
+                                    )
+                                    logger.info(f"Downloaded WAV v{_ver} for {title}")
+                                except Exception as _e:
+                                    logger.debug(f"WAV download failed v{_ver}: {_e}")
 
                     # Update DB — override API file_size with actual on-disk sizes
                     update_kwargs = {
@@ -471,17 +509,17 @@ class LalalsWorker(QThread):
                     conn.commit()
 
                     if file_path_1:
+                        conn.execute("UPDATE songs SET notes=NULL WHERE id=?", (song_id,))
+                        conn.commit()
                         self.song_completed.emit(song_id, file_path_1, file_path_2)
                         logger.info(f"Completed: {title}")
                     else:
-                        notes = "No download files captured after refresh"
-                        conn.execute(
-                            "UPDATE songs SET notes=? WHERE id=?",
-                            (notes, song_id)
-                        )
-                        conn.commit()
+                        reason = (f"lalals generation failed: {gen_reason}"
+                                  if generation_failed
+                                  else "No download files captured after refresh")
+                        notes = _handle_failed_take(conn, song_id, previous, reason)
                         self.song_error.emit(song_id, notes)
-                        logger.warning(f"No files for: {title}")
+                        logger.warning(f"No files for: {title} ({reason})")
 
                 except LalalsDriverError as e:
                     try:
@@ -490,11 +528,7 @@ class LalalsWorker(QThread):
                         pass
                     error_msg = e.user_message if hasattr(e, 'user_message') else str(e)
                     logger.error(f"Error processing {title}: {error_msg}")
-                    conn.execute(
-                        "UPDATE songs SET status='error', notes=? WHERE id=?",
-                        (error_msg, song_id)
-                    )
-                    conn.commit()
+                    error_msg = _handle_failed_take(conn, song_id, previous, error_msg)
                     self.song_error.emit(song_id, error_msg)
 
                 except Exception as e:
@@ -504,11 +538,7 @@ class LalalsWorker(QThread):
                         pass
                     error_msg = f"Unexpected error: {e}"
                     logger.error(f"Error processing {title}: {error_msg}")
-                    conn.execute(
-                        "UPDATE songs SET status='error', notes=? WHERE id=?",
-                        (error_msg, song_id)
-                    )
-                    conn.commit()
+                    error_msg = _handle_failed_take(conn, song_id, previous, error_msg)
                     self.song_error.emit(song_id, error_msg)
 
                 # Delay between songs (politeness)

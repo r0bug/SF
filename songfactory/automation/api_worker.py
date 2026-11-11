@@ -538,10 +538,11 @@ class MusicGptApiWorker(QThread):
         Raises:
             MusicGptApiError: On HTTP or parse errors.
         """
+        from lyrics_rules import apply_pronunciation
         url = f"{API_BASE}/MusicAI"
         payload = {
             "prompt": prompt,
-            "lyrics": lyrics,
+            "lyrics": apply_pronunciation(lyrics),
         }
         body = json.dumps(payload).encode("utf-8")
 

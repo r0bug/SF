@@ -21,6 +21,7 @@ TIMEOUTS = {
     "search_debounce_ms": 300,    # UI search debounce timer
     "api_capture_s": 30,          # Max wait for API task_id after submit
     "post_refresh_delay_s": 5,    # Delay after refresh before downloading
+    "generation_poll_s": 20,      # How often to check lalals for a finished song
 }
 
 

@@ -22,6 +22,8 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from automation.download_manager import song_date_prefix
+
 logger = logging.getLogger("songfactory.automation")
 
 LOG_DIR = Path.home() / ".songfactory"
@@ -1053,7 +1055,11 @@ class HistoryImportWorker(QThread):
 
             self.progress_update.emit(f"Importing: {title}")
 
-            # Download audio files via direct URLs (MP3 + WAV)
+            # Download audio files via direct URLs (MP3 + WAV) into a folder
+            # dated when lalals generated the song, not today.
+            date_prefix = song_date_prefix({"lalals_created_at": (
+                metadata.get("lalals_created_at")
+                or item.get("date_added") or item.get("created_at"))})
             file_path_1 = ""
             file_path_2 = ""
             for version in (1, 2):
@@ -1061,7 +1067,8 @@ class HistoryImportWorker(QThread):
                 if url:
                     # Download MP3
                     try:
-                        path = dm.save_from_url(url, title, version)
+                        path = dm.save_from_url(url, title, version,
+                                                date_prefix=date_prefix)
                         if version == 1:
                             file_path_1 = str(path)
                         else:
@@ -1074,7 +1081,13 @@ class HistoryImportWorker(QThread):
                     if url.endswith(".mp3"):
                         wav_url = url[:-4] + ".wav"
                         try:
-                            dm.save_from_url(wav_url, title, version)
+                            mp3 = file_path_1 if version == 1 else file_path_2
+                            dm.save_from_url(
+                                wav_url, title, version,
+                                date_prefix=date_prefix,
+                                target_path=(Path(mp3).with_suffix(".wav")
+                                             if mp3 else None),
+                            )
                             logger.info(f"Downloaded WAV for {title} v{version}")
                         except Exception as e:
                             logger.debug(
@@ -1312,14 +1325,18 @@ class HistoryImportWorker(QThread):
 
             self.progress_update.emit(f"Importing ({idx}/{total}): {title}")
 
-            # Download audio files
+            # Download audio files (dated when lalals generated the song)
+            date_prefix = song_date_prefix({"lalals_created_at": (
+                metadata.get("lalals_created_at")
+                or item.get("date_added") or item.get("created_at"))})
             file_path_1 = ""
             file_path_2 = ""
             for version in (1, 2):
                 url = metadata.get(f"audio_url_{version}")
                 if url:
                     try:
-                        path = dm.save_from_url(url, title, version)
+                        path = dm.save_from_url(url, title, version,
+                                                date_prefix=date_prefix)
                         if version == 1:
                             file_path_1 = str(path)
                         else:

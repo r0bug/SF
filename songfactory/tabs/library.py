@@ -1327,7 +1327,11 @@ class SongLibraryTab(BaseTab):
                 audio_url = metadata.get(f"audio_url_{version}")
                 if audio_url:
                     try:
-                        path = dm.save_from_url(audio_url, title, version)
+                        from automation.download_manager import song_date_prefix
+                        path = dm.save_from_url(
+                            audio_url, title, version,
+                            date_prefix=song_date_prefix(song or {}),
+                        )
                         paths.append(str(path))
                     except Exception:
                         pass

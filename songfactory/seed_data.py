@@ -363,7 +363,7 @@ SEED_LORE = [
         "content": """\
 - Spell Yakima as "Yak-eh-Mah" in all lyrics
 - Lalals prompt field: ≤ 300 characters (genre, tempo, vocal style, instruments, mood)
-- Lyrics field: full length OK (verse/chorus/bridge structure works well)
+- Lyrics field: ≤ 3000 characters total incl. section markers (aim ≤ 2800; verse/chorus/bridge structure works well)
 - Not every song needs every business — mix and match 3-5 per song for variety
 - Rotate which Brews and Cues person you name — only one per song
 - Yakima Finds = the records, stereo gear, antiques, arcade, rock shop, kids stuff

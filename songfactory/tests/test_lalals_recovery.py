@@ -31,7 +31,7 @@ class FakeDM:
     def __init__(self, tmp):
         self.tmp, self.saved = tmp, []
 
-    def save_from_url(self, url, title, version):
+    def save_from_url(self, url, title, version, date_prefix=None):
         p = Path(self.tmp) / f"{title}_v{version}.mp3"
         p.write_bytes(b"x" * 10)
         self.saved.append(url)

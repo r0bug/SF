@@ -22,6 +22,7 @@ def validate_song(
     prompt: str,
     lyrics: str,
     max_prompt_length: int = 300,
+    max_lyrics_length: int = 3000,
 ) -> list[ValidationError]:
     """Validate song creation/edit inputs."""
     errors = []
@@ -39,6 +40,14 @@ def validate_song(
         )
     if not lyrics or not lyrics.strip():
         errors.append(ValidationError("lyrics", "Lyrics cannot be empty"))
+    elif len(lyrics) > max_lyrics_length:
+        errors.append(
+            ValidationError(
+                "lyrics",
+                f"Lyrics exceed {max_lyrics_length} characters "
+                f"({len(lyrics)} / {max_lyrics_length}) — lalals will reject them",
+            )
+        )
     return errors
 
 

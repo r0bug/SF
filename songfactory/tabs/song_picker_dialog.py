@@ -1,8 +1,11 @@
 """
 Song Factory - Song Picker Dialog
 
-Modal dialog for selecting songs from the library to add to a CD project.
-Shows only songs that have audio files (file_path_1 IS NOT NULL).
+Modal dialog for selecting songs from the library.
+
+Default mode (CD Master): multi-select songs that have audio files.
+Open mode (Song Creator, ``open_mode=True``): pick one song of any status
+to load back into the editor — double-click or "Open".
 """
 
 import os
@@ -17,12 +20,15 @@ from theme import Theme
 
 
 class SongPickerDialog(QDialog):
-    """Dialog for selecting songs to add to a CD project."""
+    """Dialog for selecting songs (CD project picker, or open-in-editor)."""
 
-    def __init__(self, db, parent=None):
+    def __init__(self, db, parent=None, open_mode: bool = False):
         super().__init__(parent)
         self.db = db
-        self.setWindowTitle("Add Songs to CD Project")
+        self._open_mode = open_mode
+        self.setWindowTitle(
+            "Open Song from Database" if open_mode else "Add Songs to CD Project"
+        )
         self.setMinimumSize(700, 500)
         self.resize(800, 550)
 
@@ -44,7 +50,11 @@ class SongPickerDialog(QDialog):
         layout.setSpacing(10)
         layout.setContentsMargins(12, 12, 12, 12)
 
-        header = QLabel("Select songs to add (only songs with audio files are shown)")
+        header = QLabel(
+            "Pick a song to open in the Song Creator (double-click or Open)"
+            if self._open_mode else
+            "Select songs to add (only songs with audio files are shown)"
+        )
         header.setStyleSheet(f"color: {Theme.ACCENT}; font-weight: bold; font-size: 13px;")
         layout.addWidget(header)
 
@@ -58,14 +68,22 @@ class SongPickerDialog(QDialog):
         # Table
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Title", "Genre", "Duration", "File"])
+        self.table.setHorizontalHeaderLabels(
+            ["Title", "Genre", "Status", "Created"] if self._open_mode
+            else ["Title", "Genre", "Duration", "File"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection if self._open_mode
+            else QAbstractItemView.SelectionMode.MultiSelection
+        )
+        if self._open_mode:
+            self.table.doubleClicked.connect(self._on_add)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table, stretch=1)
@@ -75,6 +93,7 @@ class SongPickerDialog(QDialog):
         self.count_label.setStyleSheet(f"color: {Theme.TEXT}; font-size: 12px;")
         self.table.itemSelectionChanged.connect(self._update_count)
         layout.addWidget(self.count_label)
+        self.count_label.setVisible(not self._open_mode)
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -84,7 +103,7 @@ class SongPickerDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(cancel_btn)
 
-        add_btn = QPushButton("Add Selected")
+        add_btn = QPushButton("Open" if self._open_mode else "Add Selected")
         add_btn.setObjectName("addBtn")
         add_btn.clicked.connect(self._on_add)
         btn_row.addWidget(add_btn)
@@ -125,12 +144,18 @@ class SongPickerDialog(QDialog):
         """)
 
     def _load_songs(self):
-        """Load songs with audio files from the database."""
+        """Load songs from the database (only ones with audio for CDs)."""
         all_songs = self.db.get_all_songs()
-        self._all_songs = [
-            s for s in all_songs
-            if s.get("file_path_1") and os.path.exists(s["file_path_1"])
-        ]
+        if self._open_mode:
+            # Newest first; any status (drafts, queued, completed, ...)
+            self._all_songs = sorted(
+                all_songs, key=lambda s: s.get("created_at") or "", reverse=True
+            )
+        else:
+            self._all_songs = [
+                s for s in all_songs
+                if s.get("file_path_1") and os.path.exists(s["file_path_1"])
+            ]
         self._apply_filter()
 
     def _on_search_changed(self):
@@ -145,6 +170,7 @@ class SongPickerDialog(QDialog):
                 if query in (s.get("title") or "").lower()
                 or query in (s.get("genre_label") or "").lower()
                 or query in (s.get("lyrics") or "").lower()
+                or query in (s.get("prompt") or "").lower()
             ]
         else:
             self._filtered_songs = list(self._all_songs)
@@ -162,6 +188,13 @@ class SongPickerDialog(QDialog):
 
             genre = song.get("genre_label") or ""
             self.table.setItem(row, 1, QTableWidgetItem(genre))
+
+            if self._open_mode:
+                self.table.setItem(row, 2, QTableWidgetItem(song.get("status") or ""))
+                created = (song.get("created_at") or "")[:16]
+                self.table.setItem(row, 3, QTableWidgetItem(created))
+                self.table.setRowHeight(row, 32)
+                continue
 
             dur = song.get("duration_seconds")
             if dur:

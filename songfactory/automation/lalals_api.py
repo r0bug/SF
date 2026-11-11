@@ -296,6 +296,8 @@ class LalalsApi:
         Raises:
             LalalsApiError: If the workflow can't reach the generate step.
         """
+        from lyrics_rules import apply_pronunciation
+        lyrics = apply_pronunciation(lyrics)  # catches hand edits / old queue
         context = {
             "prompt": prompt, "lyrics": lyrics,
             "workflow_mode": "MUSIC_AI",

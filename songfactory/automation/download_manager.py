@@ -7,12 +7,49 @@ import urllib.error
 from datetime import date, datetime
 from pathlib import Path
 
+from glob import escape as glob_escape
+
 from automation.atomic_io import atomic_write_fn
 
 logger = logging.getLogger("songfactory.automation")
 
 # Minimum file size for a valid audio file (10 KB)
 MIN_AUDIO_BYTES = 10240
+
+
+def song_date_prefix(song) -> str:
+    """Return the YYYY-MM-DD (local time) a song was originally generated.
+
+    Folders are named after the generation date, never the download date —
+    otherwise every recovery / Verify & Sync / history import re-dates the
+    library to "today".  Prefers lalals.com's own ``lalals_created_at``
+    (``date_added`` on the project), then Song Factory's ``created_at``
+    (SQLite ``CURRENT_TIMESTAMP`` → UTC).  Returns "" if neither parses,
+    which makes the caller fall back to today.
+
+    Args:
+        song: A mapping (dict / sqlite3.Row) with either key.
+    """
+    def _get(key):
+        try:
+            return song[key]
+        except (KeyError, IndexError, TypeError):
+            return None
+
+    from datetime import timezone
+    for key in ("lalals_created_at", "created_at"):
+        raw = _get(key)
+        if not raw:
+            continue
+        try:
+            text = str(raw).strip().replace("Z", "+00:00").replace(" ", "T", 1)
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone().date().isoformat()
+    return ""
 
 
 class DownloadVerificationError(Exception):
@@ -66,7 +103,7 @@ class DownloadManager:
         return text or "Untitled"
 
     def get_song_dir(self, song_title: str, date_prefix: str = "",
-                     filename: str = "") -> Path:
+                     filename: str = "", create: bool = True) -> Path:
         """Create and return a directory for this song's files.
 
         If the directory already has files from a different song (duplicate
@@ -92,10 +129,27 @@ class DownloadManager:
         else:
             duplicate = song_dir.exists() and any(song_dir.glob("*_v1.*"))
         if duplicate:
-            ts = datetime.now().strftime("%H%M%S")
-            song_dir = self.base_dir / f"{prefix}_{safe}_{ts}"
+            # A same-titled song already owns the base dir.  Reuse an
+            # existing overflow dir that doesn't have this file yet, so v2
+            # (and WAVs) land next to their v1 instead of in a fresh
+            # per-second timestamped dir of their own.
+            reuse = None
+            if filename:
+                overflow = sorted(
+                    (d for d in self.base_dir.glob(f"{glob_escape(prefix)}_{glob_escape(safe)}_*")
+                     if d.is_dir() and re.fullmatch(r"\d{6}", d.name.rsplit("_", 1)[-1])),
+                    key=lambda d: d.name, reverse=True,
+                )
+                reuse = next((d for d in overflow
+                              if not (d / filename).exists()), None)
+            if reuse is not None:
+                song_dir = reuse
+            else:
+                ts = datetime.now().strftime("%H%M%S")
+                song_dir = self.base_dir / f"{prefix}_{safe}_{ts}"
 
-        song_dir.mkdir(parents=True, exist_ok=True)
+        if create:
+            song_dir.mkdir(parents=True, exist_ok=True)
         return song_dir
 
     def get_track_file_path(self, song_title: str, track_type: str, extension: str = ".mp3",
@@ -120,7 +174,7 @@ class DownloadManager:
         return song_dir / filename
 
     def get_file_path(self, song_title: str, version: int, extension: str = ".mp3",
-                      date_prefix: str = "") -> Path:
+                      date_prefix: str = "", create: bool = True) -> Path:
         """Get the target file path for a song version.
 
         Args:
@@ -135,7 +189,7 @@ class DownloadManager:
         safe = self._safe_title(song_title)
         filename = f"{safe}_v{version}{extension}"
         song_dir = self.get_song_dir(song_title, date_prefix=date_prefix,
-                                     filename=filename)
+                                     filename=filename, create=create)
         return song_dir / filename
 
     def save_playwright_download(self, download, song_title: str, version: int) -> Path:
@@ -292,7 +346,9 @@ class DownloadManager:
         return None
 
     def save_from_url(self, url: str, song_title: str, version: int,
-                      expected_size: int | None = None) -> Path:
+                      expected_size: int | None = None,
+                      date_prefix: str = "",
+                      target_path: str | Path | None = None) -> Path:
         """Download audio directly from a URL (S3/CloudFront) without browser.
 
         Uses atomic write: urlretrieve streams to a temp file first, then
@@ -321,9 +377,21 @@ class DownloadManager:
         if suffix not in (".mp3", ".wav", ".ogg", ".flac", ".m4a"):
             suffix = ".mp3"  # default
 
-        target_path = self.get_file_path(song_title, version, suffix)
+        if target_path is not None:
+            target_path = Path(target_path)
+        else:
+            target_path = self.get_file_path(song_title, version, suffix,
+                                             date_prefix=date_prefix,
+                                             create=False)
         logger.info(f"Downloading v{version} from URL to: {target_path}")
         logger.info(f"  URL: {url[:120]}...")
+
+        # Only create the song dir for this download, and take it away again
+        # if the download fails — a failed (e.g. 403) fetch must not leave an
+        # empty folder behind.
+        song_dir = target_path.parent
+        created_dir = not song_dir.exists()
+        song_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             atomic_write_fn(
@@ -333,8 +401,14 @@ class DownloadManager:
             file_size = target_path.stat().st_size
             self.last_download_size = file_size
             logger.info(f"  Downloaded {file_size:,} bytes")
-        except urllib.error.URLError as e:
-            logger.error(f"  Download failed: {e}")
+        except Exception as e:
+            if isinstance(e, urllib.error.URLError):
+                logger.error(f"  Download failed: {e}")
+            if created_dir:
+                try:
+                    song_dir.rmdir()  # only succeeds if still empty
+                except OSError:
+                    pass
             raise
 
         # Validate the downloaded file

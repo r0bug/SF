@@ -26,14 +26,16 @@ The primary workflow tab for generating AI songs.
 
 ### Output Panel
 - **Generated Prompt** — Editable prompt field with character counter (300 char target for lalals.com)
-- **Generated Lyrics** — Editable lyrics with verse/chorus/bridge structure markers
+- **Generated Lyrics** — Editable lyrics with verse/chorus/bridge structure markers. Capped at 3000 characters (lalals.com's limit) — saving longer lyrics shows a validation error with the count
+- **Open from Database** — Load any saved song (any status, newest first) back into the editor. Drafts/queued songs are updated in place; for songs already sent to lalals, Save/Queue create a new song so the existing recording is kept
 - **Actions** — Save to Database, Queue for Lalals, Copy Prompt, Copy Lyrics
 - **No duplicates** — Saving and queueing the same generated song (in either order) updates one library entry; a queued song is never downgraded back to draft. A new generation creates a new entry
 
 ### Generation
 - Background QThread prevents UI freezing during API calls
 - Uses Anthropic Claude API with lore-aware system prompts
-- "Yakima" always spelled "Yak-eh-Mah" for correct AI vocal pronunciation
+- "Yakima" always spelled "Yak-eh-Mah" for correct AI vocal pronunciation — enforced deterministically by `lyrics_rules.apply_pronunciation` after generation and again right before submission (catches names like "Yakima Finds" and hand edits)
+- **Lyrics length limit** — The AI is told to keep lyrics ≤ 2800 characters including section markers and line breaks. If they still come back over 3000, the generator automatically asks the model to shorten them (up to 2 attempts), keeping title, genre and prompt
 
 ---
 
@@ -131,6 +133,8 @@ Browse, search, and manage all songs with automation controls.
 - Always headless — browser runs in background, cannot be interrupted by user interaction
 - Centralized browser profile at `~/.songfactory/profiles/lalals/` preserves login session
 - Retry with exponential backoff on download failures
+- **Completion polling** — After submit, the worker checks lalals every 20 s (`generation_poll_s`) via `check_generation`; songs where every version failed on lalals' side are marked `error` with lalals' reason
+- **Failed retries keep the old recording** — Re-queuing a song that already has audio stores its previous recording; if the new generation fails, the old files and IDs are restored
 
 ### Error Recovery
 All recovery paths share `automation/lalals_recovery.py`, so a failed "Song is Done - Refresh" can always be retried later:
@@ -152,7 +156,7 @@ All recovery paths share `automation/lalals_recovery.py`, so a failed "Song is D
 - **Size mismatch detection** — When an expected file size is provided, downloads differing by more than 5% are rejected
 - **Automatic cleanup** — Invalid files are deleted immediately after detection
 - **File size propagation** — `file_size_1` and `file_size_2` database columns are always populated from actual on-disk file sizes after every download path (API, browser, home page recovery)
-- **Date-prefixed download folders** — Downloads are organized into `~/Music/SongFactory/YYYY-MM-DD_song-title/` directories, making it easy to identify when files were downloaded. Re-downloads on a different day automatically get a new folder. Old songs with non-dated paths continue to work via stored absolute paths in the database.
+- **Date-prefixed download folders** — Downloads are organized into `~/Music/SongFactory/YYYY-MM-DD_song-title/` directories, where the date is the song's **generation date**: `songs.lalals_created_at` (lalals project `date_added`) when known, otherwise `created_at` converted to local time (`download_manager.song_date_prefix`). Recovery, Verify & Sync, and History Import all use the same rule, so re-downloads land in the original folder, and failed downloads never leave empty directories. Old songs with non-dated paths continue to work via stored absolute paths in the database.
 
 ### Self-Healing Selectors
 - **SelectorRegistry** — Persists CSS selector priority order to `~/.songfactory/selector_registry.json`

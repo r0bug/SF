@@ -8,11 +8,15 @@ on lalals.com.
 
 import json
 import re
+import logging
 from typing import Optional
 
 from anthropic import Anthropic
 
 from ai_models import DEFAULT_MODEL, create_message, resolve_model, response_text
+from lyrics_rules import apply_pronunciation
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +26,11 @@ from ai_models import DEFAULT_MODEL, create_message, resolve_model, response_tex
 class SongGenerationError(Exception):
     """Raised when song generation fails for any reason."""
 
+
+# lalals.com lyrics textarea has maxlength=3000; ask for less to leave slack.
+LYRICS_MAX_CHARS = 3000
+LYRICS_TARGET_CHARS = 2800
+_SHORTEN_ATTEMPTS = 2
 
 # ---------------------------------------------------------------------------
 # System prompt template
@@ -34,15 +43,13 @@ LORE CONTEXT — Use these details about real people, places, and stories to wri
 {lore_block}
 
 RULES:
-- Spell "Yakima" as "Yak-eh-Mah" in ALL lyrics for correct AI vocal pronunciation
+- Spell "Yakima" as "Yak-eh-Mah" in ALL lyrics for correct AI vocal pronunciation — including in names ("Yak-eh-Mah Finds", "Yak-eh-Mah River")
 - The PROMPT field must be ≤ 300 characters. It describes the genre, instruments, tempo, vocal style, and mood. It does NOT contain lyrics.
-- LYRICS can be full length with verse/chorus/bridge structure.
+- LYRICS must be ≤ {lyrics_target} characters TOTAL (count everything: section markers like [Verse 1], spaces, line breaks). lalals.com hard-rejects anything over {lyrics_max}. Use verse/chorus/bridge structure, but prefer 3 verses max, and don't pad with extra repeats.
 - Be creative with which lore details to include — not every song needs every detail.
 - If the genre is specified, use the genre's prompt template as a starting point for the prompt field.
 - Lyrics should feel natural to the genre — a country song sounds different from a hip-hop track.
-- Brews and Cues has multiple bartenders (Casey, Logan, Chris, Mike) — only use ONE per song.
-- Yakima Finds has the records, CDs, cassettes, 8-tracks, stereo annex (Marantz, Kenwood, Pioneer, reel-to-reels, turntables).
-- Ralph's has the guitars, amps, instruments, and the recording studio with a young band.
+- Follow any songwriting rules included in the lore context above (e.g. a "SONGWRITING RULES" entry).
 
 Respond in this exact JSON format:
 {{
@@ -100,6 +107,29 @@ class SongGenerator:
             user_input, genre_name, genre_prompt_template, style_notes,
         )
 
+        messages = [{"role": "user", "content": user_message}]
+        song = self._parse_response(self._call(system_prompt, messages))
+
+        # lalals rejects lyrics over 3000 chars — ask the model to tighten.
+        for _ in range(_SHORTEN_ATTEMPTS):
+            n = len(song["lyrics"])
+            if n <= LYRICS_MAX_CHARS:
+                break
+            logger.info("Lyrics %d chars > %d; asking model to shorten", n, LYRICS_MAX_CHARS)
+            messages = messages + [
+                {"role": "assistant", "content": json.dumps(song)},
+                {"role": "user", "content": (
+                    f"Those lyrics are {n} characters; lalals.com rejects anything over "
+                    f"{LYRICS_MAX_CHARS}. Cut them to at most {LYRICS_TARGET_CHARS} characters "
+                    f"(about {n - LYRICS_TARGET_CHARS} fewer) — drop a verse or trim repeats, "
+                    "keep the chorus, bridge and best story details. Keep title, genre_label "
+                    "and prompt unchanged. Reply in the same JSON format."
+                )},
+            ]
+            song = self._parse_response(self._call(system_prompt, messages))
+        return song
+
+    def _call(self, system_prompt: str, messages: list[dict]) -> str:
         try:
             # Room for adaptive thinking plus the full song
             response = create_message(
@@ -107,16 +137,14 @@ class SongGenerator:
                 model=self.model,
                 max_tokens=16000,
                 system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
+                messages=messages,
             )
         except Exception as exc:
             raise SongGenerationError(f"Anthropic API call failed: {exc}") from exc
-
         try:
-            raw_text = response_text(response)
+            return response_text(response)
         except RuntimeError as exc:
             raise SongGenerationError(str(exc)) from exc
-        return self._parse_response(raw_text)
 
     def test_connection(self) -> bool:
         """Make a minimal API call to verify the key works.
@@ -159,7 +187,11 @@ class SongGenerator:
         else:
             lore_block = "(No lore entries are currently active.)"
 
-        return _SYSTEM_PROMPT_TEMPLATE.format(lore_block=lore_block)
+        return _SYSTEM_PROMPT_TEMPLATE.format(
+            lore_block=lore_block,
+            lyrics_target=LYRICS_TARGET_CHARS,
+            lyrics_max=LYRICS_MAX_CHARS,
+        )
 
     @staticmethod
     def _build_user_message(
@@ -219,5 +251,6 @@ class SongGenerator:
             "title": data["title"],
             "genre_label": data["genre_label"],
             "prompt": data["prompt"],
-            "lyrics": data["lyrics"],
+            # The model keeps names like "Yakima Finds" unconverted; enforce
+            "lyrics": apply_pronunciation(data["lyrics"]),
         }

@@ -76,7 +76,8 @@ class VerifySyncWorker(QThread):
             # Query all songs that have a conversion_id
             songs = conn.execute(
                 "SELECT id, title, conversion_id_1, conversion_id_2, "
-                "file_path_1, file_path_2, lyrics, status, audio_url_1 "
+                "file_path_1, file_path_2, lyrics, status, audio_url_1, "
+                "created_at, lalals_created_at "
                 "FROM songs "
                 "WHERE (conversion_id_1 IS NOT NULL AND conversion_id_1 != '') "
                 "   OR (conversion_id_2 IS NOT NULL AND conversion_id_2 != '') "
@@ -87,6 +88,14 @@ class VerifySyncWorker(QThread):
                 self.progress.emit("No songs with conversion IDs found")
                 self.finished.emit(0, 0, 0)
                 return
+
+            from automation.download_manager import song_date_prefix
+
+            # lalals.com has refused every WAV request (HTTP 403) since the
+            # 2026 redesign.  Stop asking after a few in a row instead of
+            # firing one doomed request per song.
+            wav_403_streak = 0
+            WAV_403_LIMIT = 3
 
             total = len(songs)
             self.progress.emit(f"Verifying {total} song(s)...")
@@ -99,6 +108,7 @@ class VerifySyncWorker(QThread):
                 song_id = song["id"]
                 title = song["title"] or f"Song #{song_id}"
                 cid = song["conversion_id_1"] or song["conversion_id_2"] or ""
+                date_prefix = song_date_prefix(song)
 
                 if not cid:
                     continue
@@ -130,7 +140,8 @@ class VerifySyncWorker(QThread):
                     candidates += [f"{b}/{cid}/{cid}.mp3" for b in S3_BASES]
                     for url in dict.fromkeys(u for u in candidates if u):
                         try:
-                            path = dm.save_from_url(url, title, 1)
+                            path = dm.save_from_url(url, title, 1,
+                                                    date_prefix=date_prefix)
                         except Exception as e:
                             logger.debug(f"VerifySync: MP3 failed for '{title}' ({url}): {e}")
                             continue
@@ -149,14 +160,26 @@ class VerifySyncWorker(QThread):
                 if mp3_path and Path(mp3_path).exists():
                     wav_path = Path(mp3_path).with_suffix(".wav")
                     base_url = mp3_url or song["audio_url_1"] or ""
-                    if not wav_path.exists() and base_url.endswith(".mp3"):
+                    if (not wav_path.exists() and base_url.endswith(".mp3")
+                            and wav_403_streak < WAV_403_LIMIT):
                         wav_url = base_url[:-4] + ".wav"
                         try:
-                            dm.save_from_url(wav_url, title, 1)
+                            # Straight into the MP3's own folder — never a
+                            # new (re-dated) one.
+                            dm.save_from_url(wav_url, title, 1,
+                                             target_path=wav_path)
+                            wav_403_streak = 0
                             wav_count += 1
                             self.song_updated.emit(song_id, f"Downloaded WAV: {title}")
                             logger.info(f"VerifySync: WAV downloaded for '{title}'")
                         except Exception as e:
+                            if getattr(e, "code", None) == 403:
+                                wav_403_streak += 1
+                                if wav_403_streak == WAV_403_LIMIT:
+                                    logger.info(
+                                        "VerifySync: lalals refuses WAV downloads "
+                                        "(403); skipping WAV for remaining songs"
+                                    )
                             logger.debug(f"VerifySync: WAV failed for '{title}': {e}")
 
                 # --- Check Lyrics ---

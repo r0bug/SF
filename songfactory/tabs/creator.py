@@ -263,6 +263,13 @@ class SongCreatorTab(BaseTab):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
+        self.open_btn = QPushButton("Open from Database")
+        self.open_btn.setStyleSheet(Theme.secondary_button_style())
+        self.open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_btn.setToolTip("Load a saved song's prompt and lyrics to edit or re-queue")
+        self.open_btn.clicked.connect(self.open_song_from_db)
+        btn_row.addWidget(self.open_btn)
+
         self.save_btn = QPushButton("Save to Database")
         self.save_btn.setStyleSheet(Theme.secondary_button_style())
         self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -710,6 +717,38 @@ class SongCreatorTab(BaseTab):
     # ------------------------------------------------------------------
     # Save / copy actions
     # ------------------------------------------------------------------
+
+    def open_song_from_db(self):
+        """Pick a saved song and load it into the editor."""
+        from tabs.song_picker_dialog import SongPickerDialog
+        dialog = SongPickerDialog(self.db, parent=self, open_mode=True)
+        if dialog.exec() and dialog.get_selected_songs():
+            self.load_song(dialog.get_selected_songs()[0])
+
+    def load_song(self, song: dict):
+        """Populate the editor from a saved song.
+
+        Saving afterwards updates that same song while it is still a draft
+        or queued; for songs already sent to lalals (completed, error, ...)
+        Save / Queue create a new song, so the existing recording is kept.
+        """
+        self.on_generation_complete({
+            "title": song.get("title") or "Untitled Song",
+            "genre_label": song.get("genre_label") or "Unknown",
+            "prompt": song.get("prompt") or "",
+            "lyrics": song.get("lyrics") or "",
+        })
+        self._saved_song_id = song.get("id")
+        self.input_text.setPlainText(song.get("user_input") or "")
+        # Select the song's genre (index 0 = "Auto" when it has none)
+        genre_id = song.get("genre_id")
+        index = 0
+        for i in range(self.genre_combo.count()):
+            data = self.genre_combo.itemData(i)
+            if genre_id and data and data.get("id") == genre_id:
+                index = i
+                break
+        self.genre_combo.setCurrentIndex(index)
 
     def save_song(self, status: str = "draft"):
         """Save the current song to the database."""

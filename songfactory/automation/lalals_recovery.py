@@ -82,13 +82,15 @@ def recover_song(api, dm, song: dict, history: list[dict] | None = None) -> dict
         song: Library song row (dict).
         history: Optional full project list for the prompt fallback.
     """
+    from automation.download_manager import song_date_prefix
     title = song.get("title") or "Untitled"
+    date_prefix = song_date_prefix(song)
     versions = locate_versions(api, song, history)
     update = {}
     for idx, project in enumerate(versions[:2], start=1):
         url = _audio_url(project)
         try:
-            path = dm.save_from_url(url, title, idx)
+            path = dm.save_from_url(url, title, idx, date_prefix=date_prefix)
         except Exception as e:
             logger.warning(f"Recovery download failed for '{title}' v{idx}: {e}")
             continue

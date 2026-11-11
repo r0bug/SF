@@ -945,6 +945,12 @@ class LalalsDriver:
                 if track_name and "track_name" not in metadata:
                     metadata["track_name"] = track_name
 
+                # When lalals generated it — names the song's folder and is
+                # kept in songs.lalals_created_at.
+                created = proj.get("date_added") or proj.get("created_at")
+                if created and "lalals_created_at" not in metadata:
+                    metadata["lalals_created_at"] = created
+
                 logger.info(
                     f"Project v{version}: id={pid[:20]}... "
                     f"status={status} track_url={'yes' if track_url else 'no'}"
@@ -1110,6 +1116,10 @@ class LalalsDriver:
                 if track_name and "track_name" not in metadata:
                     metadata["track_name"] = track_name
 
+                created = result.get("date_added") or result.get("created_at")
+                if created and "lalals_created_at" not in metadata:
+                    metadata["lalals_created_at"] = created
+
                 logger.info(
                     f"Project v{idx}: id={pid[:20]}... "
                     f"status={status} track_url={'yes' if track_url else 'no'}"
@@ -1193,6 +1203,44 @@ class LalalsDriver:
             f"cid2={task_data.get('conversion_id_2', '')[:20]}) ==="
         )
         return workflow_id, task_data
+
+    def check_generation(self, task_data: dict) -> tuple[str, str]:
+        """Ask lalals whether a submitted song has finished.
+
+        Returns:
+            ``("success", "")`` once every version is finished and at least
+            one succeeded, ``("failed", reason)`` when all versions failed
+            on lalals' side, otherwise ``("pending", "")``.
+        """
+        from automation.lalals_api import LalalsApiError
+
+        if not task_data.get("conversion_id_1"):
+            self._resolve_version_ids(task_data, wait_s=0)
+        ids = [task_data[k] for k in ("conversion_id_1", "conversion_id_2")
+               if task_data.get(k)]
+        if not ids:
+            return "pending", ""
+
+        states, reasons = [], []
+        for pid in ids:
+            try:
+                detail = self.api.get_project(pid)
+            except LalalsApiError as e:
+                logger.debug(f"Status check failed for {pid[:8]}: {e}")
+                return "pending", ""
+            state = detail.get("conversion_status", "")
+            states.append(state)
+            if state == "FAILED":
+                qt = detail.get("queue_task") or {}
+                reason = (detail.get("notes") or qt.get("error_message")
+                          or "generation failed")
+                reasons.append(reason.replace("Failure info: ", "").strip())
+
+        if all(s == "FAILED" for s in states):
+            return "failed", reasons[0]
+        if all(s in ("SUCCESS", "FAILED") for s in states):
+            return "success", ""
+        return "pending", ""
 
     def _resolve_version_ids(self, task_data: dict, wait_s: int = 30) -> bool:
         """Fill conversion_id_1/2 + project_ids in *task_data* from history.
